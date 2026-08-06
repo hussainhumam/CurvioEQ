@@ -1,0 +1,42 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 19,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "release-msvc",
+            "displayName": "Release (MSVC + Qt 6.11)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_PREFIX_PATH": "C:/Qt/6.11.1/msvc2022_64",
+                "CMAKE_MT": "${sourceDir}/tools/mt_ok.bat"
+            }
+        },
+        {
+            "name": "debug-msvc",
+            "displayName": "Debug (MSVC + Qt 6.11)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/Desktop_Qt_6_11_1_MSVC2022_64bit_Debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_PREFIX_PATH": "C:/Qt/6.11.1/msvc2022_64",
+                "CMAKE_MT": "${sourceDir}/tools/mt_ok.bat"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "release",
+            "configurePreset": "release-msvc"
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug-msvc"
+        }
+    ]
+}

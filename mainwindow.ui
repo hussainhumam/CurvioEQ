@@ -1,0 +1,676 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1306</width>
+    <height>806</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>920</width>
+    <height>540</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>CurvioEQ</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="mainLayout">
+    <property name="spacing">
+     <number>8</number>
+    </property>
+    <property name="leftMargin">
+     <number>12</number>
+    </property>
+    <property name="topMargin">
+     <number>12</number>
+    </property>
+    <property name="rightMargin">
+     <number>12</number>
+    </property>
+    <property name="bottomMargin">
+     <number>12</number>
+    </property>
+    <item>
+     <layout class="QHBoxLayout" name="contentRow">
+      <property name="spacing">
+       <number>16</number>
+      </property>
+      <item>
+       <widget class="QGroupBox" name="eqGroup">
+        <property name="title">
+         <string>Equalizer</string>
+        </property>
+        <layout class="QVBoxLayout" name="eqPanelLayout">
+        <property name="spacing">
+         <number>4</number>
+        </property>
+        <item>
+         <layout class="QHBoxLayout" name="sliderRow">
+          <item>
+           <layout class="QVBoxLayout" name="verticalLayout">
+            <item>
+             <widget class="QLabel" name="gainMaxLabel">
+              <property name="text">
+               <string>+15 db</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="dbScaleTopSpacer">
+              <property name="orientation">
+               <enum>Qt::Orientation::Vertical</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>40</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QLabel" name="gainZeroLabel">
+              <property name="text">
+               <string>   0 db</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="dbScaleBottomSpacer">
+              <property name="orientation">
+               <enum>Qt::Orientation::Vertical</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>40</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QLabel" name="gainMinLabel">
+              <property name="text">
+               <string> -15db</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="horizontalLayout">
+            <property name="spacing">
+             <number>4</number>
+            </property>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout1">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label_9">
+                <property name="text">
+                 <string>20 hz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout2">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider_2">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label_2">
+                <property name="text">
+                 <string>40 hz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout3">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider_3">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label_3">
+                <property name="text">
+                 <string>160 hz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout4">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider_4">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label_4">
+                <property name="text">
+                 <string>300 hz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout5">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider_5">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label">
+                <property name="text">
+                 <string>600 hz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout6">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider_6">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label_5">
+                <property name="text">
+                 <string>1.2 Khz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout7">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider_7">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label_6">
+                <property name="text">
+                 <string>2.4 Khz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout8">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider_8">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label_10">
+                <property name="text">
+                 <string>5 Khz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout9">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider_9">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label_7">
+                <property name="text">
+                 <string>10 Khz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="bandLayout10">
+              <property name="spacing">
+               <number>2</number>
+              </property>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QSlider" name="verticalSlider_10">
+                <property name="minimumSize">
+                 <size>
+                  <width>24</width>
+                  <height>200</height>
+                 </size>
+                </property>
+                <property name="minimum">
+                 <number>-15</number>
+                </property>
+                <property name="maximum">
+                 <number>15</number>
+                </property>
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignmentFlag::AlignHCenter">
+               <widget class="QLabel" name="label_8">
+                <property name="text">
+                 <string>20 Khz</string>
+                </property>
+                <property name="alignment">
+                 <set>Qt::AlignmentFlag::AlignCenter</set>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout_3">
+          <item>
+           <widget class="QPushButton" name="enableEqButton">
+            <property name="text">
+             <string>Enable EQ</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="disableEqButton">
+            <property name="text">
+             <string>Disable EQ</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="resetBandsButton">
+            <property name="text">
+             <string>Reset bands</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="presetsGroup">
+        <property name="minimumSize">
+         <size>
+          <width>220</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="title">
+         <string>Presets</string>
+        </property>
+        <layout class="QVBoxLayout" name="presetsLayout">
+         <item>
+          <widget class="QListWidget" name="presetsListWidget"/>
+         </item>
+         <item>
+          <widget class="QPushButton" name="savePresetButton">
+           <property name="text">
+            <string>Save as…</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="importPresetButton">
+           <property name="text">
+            <string>Import…</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="exportPresetButton">
+           <property name="text">
+            <string>Export…</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="deletePresetButton">
+           <property name="text">
+            <string>Delete</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="runningAppsGroup">
+        <property name="minimumSize">
+         <size>
+          <width>320</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="title">
+         <string>Running Apps</string>
+        </property>
+        <layout class="QVBoxLayout" name="runningAppsLayout">
+         <item>
+          <layout class="QHBoxLayout" name="runningAppsHeaderLayout">
+           <item>
+            <widget class="QLabel" name="runningAppsCountLabel">
+             <property name="text">
+              <string>Active audio sessions</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="runningAppsHeaderSpacer">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QPushButton" name="refreshButton">
+             <property name="text">
+              <string>Refresh</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <widget class="QListView" name="appListView">
+           <property name="alternatingRowColors">
+            <bool>false</bool>
+           </property>
+           <property name="selectionMode">
+            <enum>QAbstractItemView::SelectionMode::SingleSelection</enum>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="emptyStateLabel">
+           <property name="text">
+            <string>No apps playing audio</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignmentFlag::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="runningAppsHintLabel">
+           <property name="text">
+            <string>Select an app, adjust sliders or a preset, then Enable EQ</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignmentFlag::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QPlainTextEdit" name="logTextEdit">
+      <property name="minimumSize">
+       <size>
+        <width>0</width>
+        <height>80</height>
+       </size>
+      </property>
+      <property name="readOnly">
+       <bool>true</bool>
+      </property>
+      <property name="placeholderText">
+       <string>Log output — select and copy (Ctrl+C)</string>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1306</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuFile">
+    <property name="title">
+     <string>Settings</string>
+    </property>
+    <addaction name="actionSettings"/>
+    <addaction name="actionQuit"/>
+   </widget>
+   <addaction name="menuFile"/>
+  </widget>
+  <action name="actionSettings">
+   <property name="text">
+    <string>Options</string>
+   </property>
+  </action>
+  <action name="actionQuit">
+   <property name="text">
+    <string>Quit</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

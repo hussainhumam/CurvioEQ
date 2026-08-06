@@ -1,0 +1,15 @@
+dist/
+build/
+
+# Qt Creator / CMake user settings
+.qtcreator/
+*.user
+CMakeLists.txt.user
+
+# Logs and debug output
+debug-*.log
+*.log
+
+# IDE
+.vs/
+.vscode/

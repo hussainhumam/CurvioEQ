@@ -4,7 +4,17 @@
   <img src="resources/app_icon.png" alt="CurvioEQ" width="128" height="128">
 </p>
 
-**Per-app equalizer for Windows.** Captures audio from a running application via process loopback, applies a 10-band EQ, and plays the result on a device you choose. The target app's original audio is routed to a separate playback device (typically a virtual cable you install yourself).
+**Per-app equalizer for Windows** — real-time EQ for individual applications without touching system-wide audio.
+
+Captures audio from a running application via process loopback, applies a 10-band EQ, and plays the result on a device you choose. The target app's original audio is routed to a separate playback device (typically a virtual cable you install yourself).
+
+## Screenshot
+
+<p align="center">
+  <img src="resources/app_icon.png" alt="CurvioEQ app icon (replace with UI screenshot)" width="256">
+</p>
+
+*Replace with a main-window screenshot when available.*
 
 ## Download
 

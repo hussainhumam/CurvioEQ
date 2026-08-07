@@ -8,7 +8,7 @@
 
 ## Download
 
-**Windows 10+** — get the latest installer from [GitHub Releases](https://github.com/PLACEHOLDER/CurvioEQ/releases/latest).
+**Windows 10+** — get the latest installer from [GitHub Releases](https://github.com/hussainhumam/CurvioEQ/releases/latest).
 
 > Requires a virtual audio device for the routing sink (for example VB-Cable, Voicemeeter, or Steam Streaming Speakers).
 

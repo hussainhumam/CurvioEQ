@@ -11,7 +11,7 @@ Captures audio from a running application via process loopback, applies a 10-ban
 ## Screenshot
 
 <p align="center">
-  <img src="Screenshot 2026-08-07 073614.png" >
+  <img src="resources/Screenshot 2026-08-07 073614.png" >
 </p>
 
 

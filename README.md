@@ -11,7 +11,7 @@ Captures audio from a running application via process loopback, applies a 10-ban
 ## Screenshot
 
 <p align="center">
-  <img src="resources/app_icon.png" alt="CurvioEQ app icon (replace with UI screenshot)" width="256">
+  <img src="Screenshot 2026-08-07 073614.png" alt="CurvioEQ app icon (replace with UI screenshot)" width="256">
 </p>
 
 *Replace with a main-window screenshot when available.*

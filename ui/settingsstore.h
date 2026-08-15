@@ -3,8 +3,11 @@
 #include <array>
 #include <QString>
 
+#include "ui/eqcolorpalette.h"
+
 struct AppSettings {
     static constexpr int kSurroundChannelCount = 8;
+    static constexpr int kEqColorKeybindCount = EqColorPalette::kPresetColorCount;
 
     bool startWithWindows = false;
     QString routingSinkDeviceId;
@@ -12,6 +15,11 @@ struct AppSettings {
     QString eqOutputDeviceId;
     QString eqOutputDeviceName;
     bool surroundEnabled = false;
+    bool spectrumEnabled = true;
+    bool keybindsEnabled = false;
+    QString eqToggleKeybind;
+    QString outputMuteKeybind;
+    std::array<QString, kEqColorKeybindCount> eqColorKeybinds{};
     std::array<int, kSurroundChannelCount> surroundChannelLevels{50, 50, 50, 50, 50, 50, 50, 50};
 };
 

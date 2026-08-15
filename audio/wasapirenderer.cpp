@@ -207,6 +207,7 @@ bool WasapiRenderer::open(const QString &deviceId,
     m_channelCount = m_format->nChannels;
     m_formatIsFloat = formatIsFloat(m_format);
     buildLogicalChannelMap();
+    m_upmixBuffer.assign(static_cast<size_t>(m_bufferFrameCount * m_channelCount), 0.f);
 
     AudioLog::info(tag, QStringLiteral("Render opened: %1 Hz, %2 channels, buffer=%3 frames, float=%4")
                              .arg(m_sampleRate)
@@ -287,11 +288,14 @@ void WasapiRenderer::buildLogicalChannelMap()
 void WasapiRenderer::upmixToDeviceFormat(const float *input, int frameCount, int inputChannelCount)
 {
     if (!input || frameCount <= 0 || inputChannelCount <= 0 || m_channelCount <= 0) {
-        m_upmixBuffer.clear();
         return;
     }
 
-    m_upmixBuffer.assign(static_cast<size_t>(frameCount * m_channelCount), 0.f);
+    const size_t neededSamples = static_cast<size_t>(frameCount * m_channelCount);
+    if (m_upmixBuffer.size() < neededSamples) {
+        m_upmixBuffer.resize(neededSamples);
+    }
+    std::fill(m_upmixBuffer.begin(), m_upmixBuffer.begin() + static_cast<ptrdiff_t>(neededSamples), 0.f);
 
     if (inputChannelCount == 8 && m_hasLogicalChannelMap) {
         for (int frame = 0; frame < frameCount; ++frame) {

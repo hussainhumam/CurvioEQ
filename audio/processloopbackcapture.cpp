@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclientactivationparams.h>
+#include <ksmedia.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -36,6 +37,26 @@ WAVEFORMATEX *createProcessLoopbackFormat(DWORD sampleRate)
     return format;
 }
 
+WAVEFORMATEX *createProcessLoopbackFloatFormat(DWORD sampleRate)
+{
+    auto *format = static_cast<WAVEFORMATEXTENSIBLE *>(CoTaskMemAlloc(sizeof(WAVEFORMATEXTENSIBLE)));
+    if (!format) {
+        return nullptr;
+    }
+
+    std::memset(format, 0, sizeof(WAVEFORMATEXTENSIBLE));
+    format->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    format->Format.nChannels = kProcessLoopbackChannels;
+    format->Format.nSamplesPerSec = sampleRate;
+    format->Format.wBitsPerSample = 32;
+    format->Format.nBlockAlign = static_cast<WORD>(format->Format.nChannels * format->Format.wBitsPerSample / 8);
+    format->Format.nAvgBytesPerSec = format->Format.nSamplesPerSec * format->Format.nBlockAlign;
+    format->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+    format->Samples.wValidBitsPerSample = 32;
+    format->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+    return reinterpret_cast<WAVEFORMATEX *>(format);
+}
+
 bool tryInitializeCapture(IAudioClient *audioClient, WAVEFORMATEX *format, HRESULT *hrOut)
 {
     const HRESULT hr = audioClient->Initialize(
@@ -51,7 +72,9 @@ bool tryInitializeCapture(IAudioClient *audioClient, WAVEFORMATEX *format, HRESU
     return SUCCEEDED(hr);
 }
 
-bool isProcessRunning(unsigned long processId)
+} // namespace
+
+bool ProcessLoopbackCapture::isProcessRunning(unsigned long processId)
 {
     HANDLE processHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
     if (!processHandle) {
@@ -62,6 +85,8 @@ bool isProcessRunning(unsigned long processId)
     CloseHandle(processHandle);
     return ok && exitCode == STILL_ACTIVE;
 }
+
+namespace {
 
 class AudioInterfaceCompletionHandler : public IActivateAudioInterfaceCompletionHandler
 {
@@ -205,7 +230,7 @@ bool ProcessLoopbackCapture::open(unsigned long processId, QString *errorMessage
     const QString tag = QStringLiteral("LoopbackCapture");
     close();
 
-    if (!isProcessRunning(processId)) {
+    if (!ProcessLoopbackCapture::isProcessRunning(processId)) {
         const QString message = QStringLiteral("[LoopbackCapture] Target process is not running (pid=%1)").arg(processId);
         AudioLog::error(tag, message);
         if (errorMessage) {
@@ -272,24 +297,33 @@ bool ProcessLoopbackCapture::open(unsigned long processId, QString *errorMessage
     HRESULT hrInit = E_FAIL;
     bool initialized = false;
 
+    using FormatFactory = WAVEFORMATEX *(*)(DWORD);
+    const FormatFactory formatFactories[] = {createProcessLoopbackFloatFormat, createProcessLoopbackFormat};
+
     for (const DWORD sampleRate : sampleRates) {
-        if (m_format) {
-            CoTaskMemFree(m_format);
-            m_format = nullptr;
-        }
-
-        m_format = createProcessLoopbackFormat(sampleRate);
-        if (!m_format) {
-            const QString message = QStringLiteral("[LoopbackCapture] Failed to allocate process loopback format");
-            if (errorMessage) {
-                *errorMessage = message;
+        for (const FormatFactory createFormat : formatFactories) {
+            if (m_format) {
+                CoTaskMemFree(m_format);
+                m_format = nullptr;
             }
-            close();
-            return false;
+
+            m_format = createFormat(sampleRate);
+            if (!m_format) {
+                const QString message = QStringLiteral("[LoopbackCapture] Failed to allocate process loopback format");
+                if (errorMessage) {
+                    *errorMessage = message;
+                }
+                close();
+                return false;
+            }
+
+            if (tryInitializeCapture(m_audioClient, m_format, &hrInit)) {
+                initialized = true;
+                break;
+            }
         }
 
-        if (tryInitializeCapture(m_audioClient, m_format, &hrInit)) {
-            initialized = true;
+        if (initialized) {
             break;
         }
     }

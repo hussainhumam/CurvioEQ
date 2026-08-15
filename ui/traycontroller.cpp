@@ -40,24 +40,55 @@ void TrayController::setup()
     m_window->setWindowIcon(trayIcon);
     m_trayIcon->setToolTip(QString::fromLatin1(AppConstants::kAppDisplayName));
 
-    m_trayMenu->addAction(QStringLiteral("Show Window"), this, [this]() { emit showWindowRequested(); });
-    m_enableAction = m_trayMenu->addAction(QStringLiteral("Enable EQ"), this, [this]() { emit enableEqRequested(); });
-    m_disableAction = m_trayMenu->addAction(QStringLiteral("Disable EQ"), this, [this]() { emit disableEqRequested(); });
-    m_trayMenu->addSeparator();
-    m_trayMenu->addAction(QStringLiteral("Quit"), this, [this]() { emit quitRequested(); });
+    m_showWindowAction = m_trayMenu->addAction(QStringLiteral("Show Window"), this, [this]() {
+        emit showWindowRequested();
+    });
+    m_eqSeparatorAction = m_trayMenu->addSeparator();
+    m_eqSeparatorAction->setVisible(false);
+    m_quitSeparatorAction = m_trayMenu->addSeparator();
+    m_quitAction = m_trayMenu->addAction(QStringLiteral("Quit"), this, [this]() { emit quitRequested(); });
 
     m_trayIcon->setContextMenu(m_trayMenu);
     connect(m_trayIcon, &QSystemTrayIcon::activated, this, &TrayController::onTrayActivated);
     m_trayIcon->show();
 }
 
-void TrayController::updateEqControls(bool canEnable, bool canDisable)
+void TrayController::clearEqActions()
 {
-    if (m_enableAction) {
-        m_enableAction->setEnabled(canEnable);
+    for (QAction *action : m_eqActions) {
+        m_trayMenu->removeAction(action);
+        delete action;
     }
-    if (m_disableAction) {
-        m_disableAction->setEnabled(canDisable);
+    m_eqActions.clear();
+}
+
+void TrayController::updateEqSessions(const QVector<ConfiguredEqSession> &sessions)
+{
+    if (!m_trayMenu) {
+        return;
+    }
+
+    clearEqActions();
+
+    const bool hasEqRows = !sessions.isEmpty();
+    if (m_eqSeparatorAction) {
+        m_eqSeparatorAction->setVisible(hasEqRows);
+    }
+
+    for (const ConfiguredEqSession &session : sessions) {
+        const QString label = session.active
+                                  ? QStringLiteral("Disable %1").arg(session.displayName)
+                                  : QStringLiteral("Enable %1").arg(session.displayName);
+
+        const unsigned long processId = session.processId;
+        auto *action = new QAction(label, m_trayMenu);
+        action->setEnabled(true);
+        connect(action, &QAction::triggered, this, [this, processId]() {
+            emit toggleEqForProcessRequested(processId);
+        });
+
+        m_trayMenu->insertAction(m_quitSeparatorAction, action);
+        m_eqActions.push_back(action);
     }
 }
 

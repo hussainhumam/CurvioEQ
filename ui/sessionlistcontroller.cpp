@@ -1,15 +1,9 @@
 #include "sessionlistcontroller.h"
 
-
-
 #include "audio/audiosessionenumerator.h"
-
 #include "audio/audiopolicyrouter.h"
-
 #include "ui/appconstants.h"
-
 #include "ui/appiconprovider.h"
-
 #include "ui/appsessiondelegate.h"
 
 
@@ -95,8 +89,7 @@ SessionListController::SessionListController(QListView *listView,
 
 
     connect(m_timer, &QTimer::timeout, this, &SessionListController::onTimer);
-
-    m_timer->start(AppConstants::kSessionRefreshIntervalMs);
+    m_timer->setInterval(AppConstants::kSessionRefreshIntervalActiveMs);
 
 
 
@@ -108,14 +101,20 @@ SessionListController::SessionListController(QListView *listView,
 
 
 
-void SessionListController::setEqActive(unsigned long activePid, bool engineRunning)
-
+void SessionListController::setEqSessions(const QHash<unsigned long, QColor> &activeSessions)
 {
+    m_eqSessions = activeSessions;
+}
 
-    m_eqActivePid = activePid;
-
-    m_engineRunning = engineRunning;
-
+void SessionListController::setAutoRefreshEnabled(bool enabled)
+{
+    if (enabled) {
+        if (!m_timer->isActive()) {
+            m_timer->start();
+        }
+    } else {
+        m_timer->stop();
+    }
 }
 
 
@@ -156,9 +155,10 @@ void SessionListController::refresh()
 
 
 
-        const bool eqActive = m_engineRunning && session.processId == m_eqActivePid;
+        const bool eqActive = m_eqSessions.contains(session.processId);
 
         item->setData(eqActive, AppSessionDelegate::RoleEqActive);
+        item->setData(m_eqSessions.value(session.processId), AppSessionDelegate::RoleEqColor);
 
         item->setData(session.deviceId, AppSessionDelegate::RoleOutputDeviceId);
 

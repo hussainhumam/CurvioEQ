@@ -123,6 +123,11 @@ void enumerateDeviceSessions(IMMDevice *device,
             continue;
         }
 
+        if (processId == static_cast<DWORD>(GetCurrentProcessId())) {
+            sessionControl2->Release();
+            continue;
+        }
+
         LPWSTR displayName = nullptr;
         sessionControl2->GetDisplayName(&displayName);
 

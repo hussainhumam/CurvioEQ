@@ -24,6 +24,8 @@ public:
 
     bool read(float *interleavedBuffer, int frameCount, int *framesRead, QString *errorMessage);
 
+    static bool isProcessRunning(unsigned long processId);
+
 private:
     IAudioClient *m_audioClient = nullptr;
     IAudioCaptureClient *m_captureClient = nullptr;

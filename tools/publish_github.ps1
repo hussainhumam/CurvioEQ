@@ -1,8 +1,13 @@
 # Run after: gh auth login
-# Usage: powershell -ExecutionPolicy Bypass -File tools/publish_github.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File tools/publish_github.ps1 [-Version 1.1.0]
+
+param(
+    [string]$Version = "1.1.0"
+)
 
 $ErrorActionPreference = "Stop"
 $env:Path = "C:\Program Files\Git\cmd;C:\Program Files\GitHub CLI;" + $env:Path
+$tag = "v$Version"
 
 Set-Location $PSScriptRoot\..
 
@@ -94,17 +99,25 @@ if (-not (Test-Path "dist\CurvioEQ-Setup.exe")) {
     Write-Error "Installer not found. Run build_installer.bat first."
 }
 
-$releaseExists = gh release view v1.0.0 2>$null
+$releaseNotesFile = "CHANGELOG.md"
+if (-not (Test-Path $releaseNotesFile)) {
+    Write-Error "Release notes not found: $releaseNotesFile"
+}
+
+gh release view $tag 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    gh release create v1.0.0 dist/CurvioEQ-Setup.exe `
-        --title "CurvioEQ v1.0.0" `
-        --notes "First public release.`n`n- Windows 10+`n- Requires a virtual audio device for routing sink (VB-Cable, Voicemeeter, or Steam Streaming Speakers)"
+    gh release create $tag dist/CurvioEQ-Setup.exe `
+        --title "CurvioEQ $tag" `
+        --notes-file $releaseNotesFile
+} else {
+    Write-Host "Release $tag already exists — uploading installer (clobber)..."
+    gh release upload $tag dist/CurvioEQ-Setup.exe --clobber
 }
 
 Write-Host ""
 Write-Host "Done!"
 Write-Host "  Repo:     https://github.com/$username/CurvioEQ"
-Write-Host "  Release:  https://github.com/$username/CurvioEQ/releases/tag/v1.0.0"
+Write-Host "  Release:  https://github.com/$username/CurvioEQ/releases/tag/$tag"
 Write-Host "  Profile:  https://github.com/$username"
 Write-Host ""
 Write-Host "Pin repos: https://github.com/$username?tab=repositories -> Customize your pins -> pin CurvioEQ first"

@@ -32,10 +32,17 @@ qt_add_executable(CurvioEQ
     audio/eqprocessor.h
     audio/surroundprocessor.cpp
     audio/surroundprocessor.h
+    audio/eqaudiosession.cpp
+    audio/eqaudiosession.h
+    audio/audioringbuffer.h
     audio/audioengine.cpp
     audio/audioengine.h
     audio/audiopolicyrouter.cpp
     audio/audiopolicyrouter.h
+    audio/audioendpointvolume.cpp
+    audio/audioendpointvolume.h
+    audio/audiosessionvolume.cpp
+    audio/audiosessionvolume.h
     audio/log.h
     ui/appiconprovider.cpp
     ui/appiconprovider.h
@@ -47,6 +54,10 @@ qt_add_executable(CurvioEQ
     ui/settingsstore.h
     ui/settingsdialog.cpp
     ui/settingsdialog.h
+    ui/keybindsdialog.cpp
+    ui/keybindsdialog.h
+    ui/globalhotkeymanager.cpp
+    ui/globalhotkeymanager.h
     ui/appconstants.h
     ui/apppaths.cpp
     ui/apppaths.h
@@ -58,8 +69,10 @@ qt_add_executable(CurvioEQ
     ui/presetpanelcontroller.h
     ui/sessionlistcontroller.cpp
     ui/sessionlistcontroller.h
-    ui/eqsessioncontroller.cpp
-    ui/eqsessioncontroller.h
+    ui/eqsessionmanager.cpp
+    ui/eqsessionmanager.h
+    ui/eqcolorpalette.cpp
+    ui/eqcolorpalette.h
     ui/traycontroller.cpp
     ui/traycontroller.h
     ui/spectrumanalyzer.cpp

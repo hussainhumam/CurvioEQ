@@ -24,12 +24,17 @@ public:
     void process(float *interleavedSamples, int frameCount, int channelCount);
 
 private:
-    struct Biquad {
+    struct BiquadCoeffs {
         float b0 = 1.f;
         float b1 = 0.f;
         float b2 = 0.f;
         float a1 = 0.f;
         float a2 = 0.f;
+    };
+
+    struct Biquad {
+        std::array<BiquadCoeffs, 2> coeffs{};
+        std::atomic<int> activeCoeffIndex{0};
         float z1 = 0.f;
         float z2 = 0.f;
 

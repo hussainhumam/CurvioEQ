@@ -65,6 +65,16 @@ void SpectrumCapture::pushAfter(const float *samples, int frameCount, int channe
     pushRing(&m_afterRing, &m_afterWrite, &m_afterFilled, samples, frameCount, channelCount);
 }
 
+void SpectrumCapture::pushBeforeAndAfter(const float *beforeSamples,
+                                         const float *afterSamples,
+                                         int frameCount,
+                                         int channelCount)
+{
+    QMutexLocker lock(&m_mutex);
+    pushRing(&m_beforeRing, &m_beforeWrite, &m_beforeFilled, beforeSamples, frameCount, channelCount);
+    pushRing(&m_afterRing, &m_afterWrite, &m_afterFilled, afterSamples, frameCount, channelCount);
+}
+
 bool SpectrumCapture::snapshot(std::vector<float> *before,
                                std::vector<float> *after,
                                int *sampleRate)
@@ -144,8 +154,15 @@ void SpectrumAnalyzer::computeBarMagnitudes(const std::vector<float> &timeDomain
         return;
     }
 
-    std::vector<float> real(timeDomain.begin(), timeDomain.end());
-    std::vector<float> imag(n, 0.f);
+    thread_local std::vector<float> real;
+    thread_local std::vector<float> imag;
+    if (real.size() != n) {
+        real.resize(n);
+        imag.assign(n, 0.f);
+    } else {
+        std::fill(imag.begin(), imag.end(), 0.f);
+    }
+    std::copy(timeDomain.begin(), timeDomain.end(), real.begin());
 
     for (size_t i = 0; i < n; ++i) {
         const float window = 0.5f * (1.f - std::cos(2.f * kPi * static_cast<float>(i) / static_cast<float>(n - 1)));
@@ -178,7 +195,7 @@ void SpectrumAnalyzer::computeBarMagnitudes(const std::vector<float> &timeDomain
             peak = std::max(peak, mag);
         }
 
-        const float normalized = std::min(1.f, std::log10(1.f + peak * 8.f) / 2.f);
+        const float normalized = std::log10(1.f + peak * 8.f) / 2.f;
         (*magnitudes)[bar] = normalized;
     }
 }

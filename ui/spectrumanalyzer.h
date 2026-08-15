@@ -13,6 +13,10 @@ public:
     void reset();
     void pushBefore(const float *samples, int frameCount, int channelCount);
     void pushAfter(const float *samples, int frameCount, int channelCount);
+    void pushBeforeAndAfter(const float *beforeSamples,
+                            const float *afterSamples,
+                            int frameCount,
+                            int channelCount);
     void setSampleRate(int sampleRate);
 
     bool snapshot(std::vector<float> *before, std::vector<float> *after, int *sampleRate);

@@ -1,6 +1,7 @@
 #include "appsessiondelegate.h"
 
 #include <QApplication>
+#include <QColor>
 #include <QPainter>
 #include <QFontMetrics>
 
@@ -87,7 +88,15 @@ void AppSessionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
                       painter->fontMetrics().elidedText(sublineText, Qt::ElideRight, textWidth));
 
     if (eqActive) {
-        const QString badgeText = QStringLiteral("EQ ON");
+        const QColor eqColor = index.data(RoleEqColor).value<QColor>();
+        const QColor badgeColor = eqColor.isValid() ? eqColor : QColor(70, 130, 220);
+
+        const int stripeWidth = 4;
+        painter->setBrush(badgeColor);
+        painter->setPen(Qt::NoPen);
+        painter->drawRect(QRect(rowRect.left(), rowRect.top(), stripeWidth, rowRect.height()));
+
+        const QString badgeText = QStringLiteral("EQ");
         QFont badgeFont = opt.font;
         badgeFont.setBold(true);
         badgeFont.setPointSize(opt.font.pointSize() - 1);
@@ -101,9 +110,7 @@ void AppSessionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
 
         const int dotX = badgeX + kBadgeDotRadius + 2;
         const int dotY = badgeY + badgeHeight / 2;
-        const QColor badgeColor(70, 130, 220);
         painter->setBrush(badgeColor);
-        painter->setPen(Qt::NoPen);
         painter->drawEllipse(QPoint(dotX, dotY), kBadgeDotRadius, kBadgeDotRadius);
 
         painter->setPen(badgeColor);

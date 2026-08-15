@@ -3,8 +3,14 @@
 #include "ui_mainwindow.h"
 
 #include "audio/log.h"
+#include "audio/audioendpointvolume.h"
+#include "audio/audiosessionvolume.h"
 #include "ui/appconstants.h"
-#include "ui/eqsessioncontroller.h"
+#include "ui/audiodeviceresolver.h"
+#include "ui/eqcolorpalette.h"
+#include "ui/eqsessionmanager.h"
+#include "ui/globalhotkeymanager.h"
+#include "ui/keybindsdialog.h"
 #include "ui/presetpanelcontroller.h"
 #include "ui/sessionlistcontroller.h"
 #include "ui/settingsdialog.h"
@@ -21,6 +27,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QScrollBar>
+#include <QShowEvent>
 #include <QVBoxLayout>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -31,6 +38,9 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle(QString::fromLatin1(AppConstants::kAppDisplayName));
     setStatusBar(nullptr);
 
+    ui->presetsLayout->setStretch(0, 1);
+    ui->presetsLayout->setStretch(1, 0);
+
     ui->horizontalLayout_3->setContentsMargins(0, 4, 0, 0);
     ui->horizontalLayout_3->setSpacing(8);
     for (QPushButton *btn : {ui->enableEqButton, ui->disableEqButton, ui->resetBandsButton}) {
@@ -38,10 +48,15 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     setupSurroundUi();
+    setupEqControls();
     restructureLayout();
 
     m_spectrumWidget->setCapture(&m_spectrumCapture);
     m_audioEngine.setSpectrumCapture(&m_spectrumCapture);
+    connect(m_spectrumWidget, &SpectrumWidget::spectrumEnabledChanged, this, [this](bool) {
+        saveSpectrumSettings();
+        updateSpectrumForSelection();
+    });
 
     QFont logFont = ui->logTextEdit->font();
     logFont.setFamily(QStringLiteral("Consolas"));
@@ -63,15 +78,44 @@ MainWindow::MainWindow(QWidget *parent)
     };
 
     for (QSlider *slider : m_bandSliders) {
+        slider->setMinimum(-AppConstants::kMaxGainDb);
+        slider->setMaximum(AppConstants::kMaxGainDb);
         slider->setMinimumHeight(120);
         slider->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         slider->setValue(0);
         connect(slider, &QSlider::valueChanged, this, [this](int) {
-            if (m_audioEngine.isRunning()) {
-                m_audioEngine.setGains(readSliderGains());
+            if (m_loadingSliders || !m_eqSessionManager) {
+                return;
             }
+            const unsigned long pid = m_sessionList ? m_sessionList->selectedProcessId() : 0UL;
+            if (pid == 0) {
+                return;
+            }
+            m_eqSessionManager->scheduleLiveGainsForProcess(pid);
         });
     }
+
+    auto *masterColumn = new QVBoxLayout();
+    masterColumn->setContentsMargins(0, 0, 0, 0);
+    masterColumn->setSpacing(ui->bandLayout1->spacing());
+
+    m_masterSlider = new QSlider(Qt::Vertical, ui->eqGroup);
+    m_masterSlider->setMinimum(-AppConstants::kMaxGainDb);
+    m_masterSlider->setMaximum(AppConstants::kMaxGainDb);
+    m_masterSlider->setValue(0);
+    m_masterSlider->setMinimumWidth(24);
+    m_masterSlider->setMinimumHeight(120);
+    m_masterSlider->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    m_masterSlider->setToolTip(QStringLiteral("Shift all bands together"));
+
+    auto *masterLabel = new QLabel(QStringLiteral("All"), ui->eqGroup);
+    masterLabel->setAlignment(Qt::AlignCenter);
+
+    masterColumn->addWidget(m_masterSlider, 1, Qt::AlignHCenter);
+    masterColumn->addWidget(masterLabel, 0, Qt::AlignHCenter);
+    ui->horizontalLayout->insertLayout(0, masterColumn);
+
+    connect(m_masterSlider, &QSlider::valueChanged, this, &MainWindow::onMasterSliderChanged);
     for (int i = 0; i < ui->horizontalLayout->count(); ++i) {
         QLayoutItem *item = ui->horizontalLayout->itemAt(i);
         if (item && item->layout()) {
@@ -97,6 +141,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->gainMaxLabel->setAlignment(Qt::AlignRight | Qt::AlignTop);
     ui->gainZeroLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     ui->gainMinLabel->setAlignment(Qt::AlignRight | Qt::AlignBottom);
+    ui->gainMaxLabel->setText(QStringLiteral("+%1 db").arg(AppConstants::kMaxGainDb));
+    ui->gainMinLabel->setText(QStringLiteral("-%1 db").arg(AppConstants::kMaxGainDb));
     auto *freqRowPad = new QWidget(ui->eqGroup);
     freqRowPad->setFixedHeight(ui->label_9->sizeHint().height() + ui->bandLayout1->spacing());
     ui->verticalLayout->addWidget(freqRowPad);
@@ -111,39 +157,39 @@ MainWindow::MainWindow(QWidget *parent)
                                               ui->runningAppsCountLabel,
                                               ui->emptyStateLabel,
                                               this);
-    connect(m_sessionList, &SessionListController::selectionChanged, this, &MainWindow::updateEqControlState);
-    connect(m_sessionList, &SessionListController::refreshRequested, this, &MainWindow::updateEqControlState);
+    connect(m_sessionList, &SessionListController::selectionChanged, this, [this]() {
+        syncSlidersToSelection();
+        updateEqControlState();
+    });
+    connect(m_sessionList, &SessionListController::refreshRequested, this, [this]() {
+        m_audioEngine.pruneEndedSessions();
+        updateEqControlState();
+    });
     connect(m_sessionList, &SessionListController::logMessage, this, &MainWindow::appendLog);
     connect(m_sessionList, &SessionListController::errorOccurred, this, &MainWindow::showCopyableError);
     connect(ui->refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshClicked);
 
-    m_eqSession = new EqSessionController(&m_audioEngine, &m_settingsStore, this);
-    m_eqSession->setGainReader([this]() { return readSliderGains(); });
-    m_eqSession->setSurroundStateReader([this]() { return readSurroundState(); });
-    m_eqSession->setSelectedProcessIdProvider([this]() {
-        return m_sessionList ? m_sessionList->selectedProcessId() : 0UL;
-    });
-    m_eqSession->setDisplayNameProvider([this](unsigned long pid) {
+    m_eqSessionManager = new EqSessionManager(&m_audioEngine, &m_settingsStore, this);
+    m_eqSessionManager->setGainReader([this]() { return readSliderGains(); });
+    m_eqSessionManager->setSurroundStateReader([this]() { return readSurroundState(); });
+    m_eqSessionManager->setDisplayNameProvider([this](unsigned long pid) {
         return m_sessionList ? m_sessionList->displayNameForPid(pid) : QString();
     });
-    connect(m_eqSession, &EqSessionController::logMessage, this, &MainWindow::appendLog);
-    connect(m_eqSession, &EqSessionController::errorOccurred, this,
+    connect(m_eqSessionManager, &EqSessionManager::logMessage, this, &MainWindow::appendLog);
+    connect(m_eqSessionManager, &EqSessionManager::errorOccurred, this,
             [this](const QString &title, const QString &message) {
                 showCopyableError(title, message);
                 if (m_tray && title.startsWith(QStringLiteral("EQ failed"))) {
                     m_tray->showCriticalMessage(QString::fromLatin1(AppConstants::kAppDisplayName), message);
                 }
             });
-    connect(m_eqSession, &EqSessionController::settingsRequested, this, &MainWindow::onSettingsClicked);
-    connect(m_eqSession, &EqSessionController::controlStateChanged, this, &MainWindow::updateEqControlState);
-    connect(m_eqSession, &EqSessionController::eqStateChanged, this,
-            [this](bool running, unsigned long pid, const QString &appName) {
-                if (m_sessionList) {
-                    m_sessionList->setEqActive(pid, running);
-                    refreshSessionList();
-                }
-                updateSpectrumUi(running, appName);
-            });
+    connect(m_eqSessionManager, &EqSessionManager::settingsRequested, this, &MainWindow::onSettingsClicked);
+    connect(m_eqSessionManager, &EqSessionManager::controlStateChanged, this, &MainWindow::updateEqControlState);
+    connect(m_eqSessionManager, &EqSessionManager::eqStateChanged, this, [this]() {
+        refreshSessionList();
+        updateSpectrumForSelection();
+        updateEqControlState();
+    });
 
     m_presetStore.load();
     m_presetPanel = new PresetPanelController(ui->presetsListWidget,
@@ -156,16 +202,25 @@ MainWindow::MainWindow(QWidget *parent)
     m_presetPanel->setBandSliders(m_bandSliders);
     m_presetPanel->setGainReader([this]() { return readSliderGains(); });
     m_presetPanel->setEngineGainApplier([this](const std::array<float, EqProcessor::kBandCount> &gains) {
-        if (m_audioEngine.isRunning()) {
-            m_audioEngine.setGains(gains);
+        if (!m_eqSessionManager || !m_sessionList) {
+            return;
         }
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid == 0) {
+            return;
+        }
+        m_eqSessionManager->saveDraftForProcess(pid, gains, readSurroundState());
     });
     connect(m_presetPanel, &PresetPanelController::logMessage, this, &MainWindow::appendLog);
     connect(m_presetPanel, &PresetPanelController::errorOccurred, this, &MainWindow::showCopyableError);
+    connect(m_presetPanel, &PresetPanelController::presetApplied, this, [this](const EqPreset &) {
+        resetMasterSlider();
+    });
     m_presetPanel->refreshList();
 
     connect(ui->enableEqButton, &QPushButton::clicked, this, &MainWindow::onEnableEq);
     connect(ui->disableEqButton, &QPushButton::clicked, this, &MainWindow::onDisableEq);
+    connect(m_disableAllButton, &QPushButton::clicked, this, &MainWindow::onDisableAllEq);
     connect(ui->resetBandsButton, &QPushButton::clicked, this, &MainWindow::onResetClicked);
     connect(m_resetSurroundButton, &QPushButton::clicked, this, &MainWindow::onResetSurroundClicked);
     connect(m_applySurroundButton, &QPushButton::clicked, this, &MainWindow::onApplySurroundClicked);
@@ -174,19 +229,44 @@ MainWindow::MainWindow(QWidget *parent)
         applySurroundToEngine();
         saveSurroundSettings();
     });
+    for (QSpinBox *spin : m_surroundSpins) {
+        if (spin) {
+            connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+                if (m_loadingSliders || !m_eqSessionManager) {
+                    return;
+                }
+                applySurroundToEngine();
+                saveSurroundSettings();
+            });
+        }
+    }
     connect(ui->actionSettings, &QAction::triggered, this, &MainWindow::onSettingsClicked);
+    connect(ui->actionKeybinds, &QAction::triggered, this, &MainWindow::onKeybindsClicked);
     connect(ui->actionQuit, &QAction::triggered, this, &MainWindow::onQuitApp);
+
+    m_hotkeyManager = new GlobalHotkeyManager(this);
+    connect(m_hotkeyManager, &GlobalHotkeyManager::hotkeyTriggered, this, &MainWindow::onHotkeyTriggered);
+    connect(m_hotkeyManager, &GlobalHotkeyManager::registrationFailed, this, [this](const QString &message) {
+        appendLog(QStringLiteral("WARN"), message);
+    });
 
     m_settingsStore.load();
     applySettings(m_settingsStore.settings());
+    applyKeybindSettings();
 
     connect(&m_audioEngine, &AudioEngine::statusChanged, this, &MainWindow::onEngineStatusChanged);
     connect(&m_audioEngine, &AudioEngine::errorOccurred, this, &MainWindow::onEngineError);
+    connect(&m_audioEngine, &AudioEngine::sessionStopped, m_eqSessionManager,
+            &EqSessionManager::onSessionStopped, Qt::QueuedConnection);
+    connect(&m_audioEngine, &AudioEngine::sessionStopped, this, [this](unsigned long) {
+        refreshSessionList();
+        updateSpectrumForSelection();
+        updateEqControlState();
+    }, Qt::QueuedConnection);
 
     m_tray = new TrayController(this, this);
     connect(m_tray, &TrayController::showWindowRequested, this, &MainWindow::onShowWindow);
-    connect(m_tray, &TrayController::enableEqRequested, this, &MainWindow::onEnableEq);
-    connect(m_tray, &TrayController::disableEqRequested, this, &MainWindow::onDisableEq);
+    connect(m_tray, &TrayController::toggleEqForProcessRequested, this, &MainWindow::onTrayToggleEq);
     connect(m_tray, &TrayController::quitRequested, this, &MainWindow::onQuitApp);
     connect(m_tray, &TrayController::logMessage, this, &MainWindow::appendLog);
     m_tray->setup();
@@ -204,6 +284,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     updateEqControlState();
     refreshSessionList();
+    syncSlidersToSelection();
 
     appendLog(QStringLiteral("INFO"), QStringLiteral("Ready"));
     AudioLog::info(QStringLiteral("MainWindow"), QStringLiteral("UI initialized"));
@@ -212,8 +293,17 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     m_quitting = true;
+    if (m_hotkeyManager) {
+        m_hotkeyManager->clear();
+    }
     m_audioEngine.stop();
     delete ui;
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    applyKeybindSettings();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -292,6 +382,27 @@ void MainWindow::setupSurroundUi()
     groupLayout->addLayout(grid);
 }
 
+void MainWindow::setupEqControls()
+{
+    auto *colorLabel = new QLabel(QStringLiteral("Color:"), ui->eqGroup);
+    m_colorPalette = new EqColorPalette(ui->eqGroup);
+    ui->horizontalLayout_3->insertWidget(0, colorLabel);
+    ui->horizontalLayout_3->insertWidget(1, m_colorPalette);
+
+    m_disableAllButton = new QPushButton(QStringLiteral("Disable all"), ui->eqGroup);
+    m_disableAllButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    ui->horizontalLayout_3->addWidget(m_disableAllButton);
+
+    ui->disableEqButton->setText(QStringLiteral("Disable for app"));
+
+    connect(m_colorPalette, &EqColorPalette::colorSelected, this, [this](const QColor &) {
+        updateEqControlState();
+    });
+    connect(m_colorPalette, &EqColorPalette::selectionChanged, this, [this]() {
+        updateEqControlState();
+    });
+}
+
 void MainWindow::restructureLayout()
 {
     ui->mainLayout->removeWidget(ui->logTextEdit);
@@ -312,7 +423,7 @@ void MainWindow::restructureLayout()
     rightLayout->addLayout(appsRow, 1);
 
     m_spectrumWidget = new SpectrumWidget(this);
-    m_spectrumWidget->setMinimumHeight(78);
+    m_spectrumWidget->setMinimumHeight(96);
     m_spectrumWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     rightLayout->addWidget(m_spectrumWidget, 1);
 
@@ -384,9 +495,14 @@ void MainWindow::applySurroundToUi(bool enabled, const std::array<int, SurroundP
 
 void MainWindow::applySurroundToEngine()
 {
-    const auto state = readSurroundState();
-    m_audioEngine.setSurroundEnabled(state.first);
-    m_audioEngine.setSurroundChannelLevels(state.second);
+    if (!m_eqSessionManager || !m_sessionList) {
+        return;
+    }
+    const unsigned long pid = m_sessionList->selectedProcessId();
+    if (pid == 0) {
+        return;
+    }
+    m_eqSessionManager->pushLiveSurroundForProcess(pid);
 }
 
 void MainWindow::saveSurroundSettings()
@@ -395,6 +511,18 @@ void MainWindow::saveSurroundSettings()
     const auto state = readSurroundState();
     settings.surroundEnabled = state.first;
     settings.surroundChannelLevels = state.second;
+    m_settingsStore.setSettings(settings);
+    m_settingsStore.save();
+}
+
+void MainWindow::saveSpectrumSettings()
+{
+    if (!m_spectrumWidget) {
+        return;
+    }
+
+    AppSettings settings = m_settingsStore.settings();
+    settings.spectrumEnabled = m_spectrumWidget->isSpectrumEnabled();
     m_settingsStore.setSettings(settings);
     m_settingsStore.save();
 }
@@ -428,22 +556,26 @@ void MainWindow::onRefreshClicked()
 
 void MainWindow::refreshSessionList()
 {
-    if (!m_sessionList || !m_eqSession) {
+    if (!m_sessionList || !m_eqSessionManager) {
         return;
     }
 
-    m_sessionList->setEqActive(m_eqSession->activePid(), m_eqSession->isRunning());
+    m_sessionList->setEqSessions(m_eqSessionManager->activeSessionColors());
     m_sessionList->refresh();
 }
 
 void MainWindow::onResetClicked()
 {
-    for (QSlider *slider : m_bandSliders) {
-        slider->setValue(0);
-    }
+    m_loadingSliders = true;
+    applyGainsToSliders({});
+    m_loadingSliders = false;
+    resetMasterSlider();
 
-    if (m_eqSession) {
-        m_eqSession->resetBandGains();
+    if (m_eqSessionManager && m_sessionList) {
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid != 0) {
+            m_eqSessionManager->saveDraftForProcess(pid, readSliderGains(), readSurroundState());
+        }
     }
 
     appendLog(QStringLiteral("INFO"), QStringLiteral("EQ bands reset to 0 dB"));
@@ -452,22 +584,86 @@ void MainWindow::onResetClicked()
 
 void MainWindow::onEnableEq()
 {
-    if (m_eqSession && m_eqSession->snapshot().valid) {
-        applySurroundToUi(m_eqSession->snapshot().surroundEnabled,
-                          m_eqSession->snapshot().surroundChannelLevels);
-        applySurroundToEngine();
+    if (!m_eqSessionManager || !m_sessionList || !m_colorPalette) {
+        return;
     }
 
-    if (m_eqSession) {
-        m_eqSession->enableEq();
+    const unsigned long pid = m_sessionList->selectedProcessId();
+    if (pid == 0) {
+        showCopyableError(QStringLiteral("Enable EQ"), QStringLiteral("Select an app from the list first."));
+        return;
+    }
+
+    if (!m_colorPalette->hasSelection()) {
+        const EqSessionSnapshot snapshot = m_eqSessionManager->snapshotFor(pid);
+        if (!snapshot.labelColor.isValid()) {
+            showCopyableError(QStringLiteral("Enable EQ"), QStringLiteral("Pick a color before enabling EQ."));
+            return;
+        }
+    }
+
+    const QColor labelColor = m_colorPalette->hasSelection()
+                                  ? m_colorPalette->selectedColor()
+                                  : m_eqSessionManager->snapshotFor(pid).labelColor;
+
+    if (m_eqSessionManager->enableForProcess(pid, labelColor)) {
+        if (m_colorPalette->hasSelection()) {
+            m_colorPalette->clearSelection();
+        }
+        m_sliderEditPid = pid;
+        refreshSessionList();
+        updateSpectrumForSelection();
+        updateEqControlState();
     }
 }
 
 void MainWindow::onDisableEq()
 {
-    if (m_eqSession) {
-        m_eqSession->disableEq();
+    if (!m_eqSessionManager || !m_sessionList) {
+        return;
     }
+
+    const unsigned long pid = m_sessionList->selectedProcessId();
+    if (pid == 0) {
+        return;
+    }
+
+    m_eqSessionManager->disableForProcess(pid);
+    syncSlidersToSelection();
+    refreshSessionList();
+    updateSpectrumForSelection();
+    updateEqControlState();
+}
+
+void MainWindow::onDisableAllEq()
+{
+    if (!m_eqSessionManager) {
+        return;
+    }
+
+    m_eqSessionManager->disableAll();
+    syncSlidersToSelection();
+    refreshSessionList();
+    updateSpectrumForSelection();
+    updateEqControlState();
+}
+
+void MainWindow::onTrayToggleEq(unsigned long processId)
+{
+    if (!m_eqSessionManager || processId == 0) {
+        return;
+    }
+
+    if (m_eqSessionManager->isRunning(processId)) {
+        m_eqSessionManager->disableForProcess(processId);
+    } else {
+        m_eqSessionManager->restoreForProcess(processId);
+    }
+
+    syncSlidersToSelection();
+    refreshSessionList();
+    updateSpectrumForSelection();
+    updateEqControlState();
 }
 
 void MainWindow::onShowWindow()
@@ -511,11 +707,8 @@ void MainWindow::onEngineStatusChanged(const QString &message)
     appendLog(level, message);
 
     if (message.contains(QStringLiteral("EQ stopped"), Qt::CaseInsensitive)) {
-        if (m_eqSession) {
-            m_eqSession->notifyEngineStopped();
-        }
         refreshSessionList();
-        updateSpectrumUi(false, {});
+        updateSpectrumForSelection();
     }
     updateEqControlState();
 }
@@ -527,11 +720,11 @@ void MainWindow::onEngineError(const QString &message)
     if (m_tray) {
         m_tray->showCriticalMessage(QString::fromLatin1(AppConstants::kAppDisplayName), message);
     }
-    if (m_eqSession) {
-        m_eqSession->notifyEngineStopped();
+    if (m_eqSessionManager) {
+        m_eqSessionManager->disableAll();
     }
     refreshSessionList();
-    updateSpectrumUi(false, {});
+    updateSpectrumForSelection();
     updateEqControlState();
 }
 
@@ -545,6 +738,104 @@ void MainWindow::onSettingsClicked()
     applySettings(dialog.resultSettings());
 }
 
+void MainWindow::onKeybindsClicked()
+{
+    KeybindsDialog dialog(m_settingsStore.settings(), this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    AppSettings settings = m_settingsStore.settings();
+    const AppSettings keybindSettings = dialog.resultSettings();
+    settings.keybindsEnabled = keybindSettings.keybindsEnabled;
+    settings.eqToggleKeybind = keybindSettings.eqToggleKeybind;
+    settings.outputMuteKeybind = keybindSettings.outputMuteKeybind;
+    settings.eqColorKeybinds = keybindSettings.eqColorKeybinds;
+    applySettings(settings);
+}
+
+void MainWindow::onHotkeyTriggered(int hotkeyId)
+{
+    if (hotkeyId == GlobalHotkeyManager::kEqToggleHotkeyId) {
+        if (m_eqSessionManager && m_eqSessionManager->isAnyRunning()) {
+            onDisableAllEq();
+        }
+        return;
+    }
+
+    if (hotkeyId == GlobalHotkeyManager::kOutputMuteHotkeyId) {
+        const ResolvedDevice output = AudioDeviceResolver::resolveEqOutput(m_settingsStore.settings());
+        if (output.id.isEmpty()) {
+            appendLog(QStringLiteral("WARN"),
+                      QStringLiteral("Mute hotkey: no EQ output device configured in Settings"));
+            return;
+        }
+
+        QString errorMessage;
+        if (AudioEndpointVolume::toggleMute(output.id, &errorMessage)) {
+            appendLog(QStringLiteral("INFO"),
+                      QStringLiteral("Toggled mute on EQ output device: %1").arg(output.name));
+        } else {
+            appendLog(QStringLiteral("WARN"),
+                      QStringLiteral("Mute hotkey failed: %1").arg(errorMessage));
+        }
+        return;
+    }
+
+    const int colorIndex = GlobalHotkeyManager::eqColorIndexFromHotkeyId(hotkeyId);
+    if (colorIndex >= 0) {
+        onColorKeybindTriggered(colorIndex);
+    }
+}
+
+void MainWindow::onColorKeybindTriggered(int colorIndex)
+{
+    if (colorIndex < 0 || colorIndex >= AppSettings::kEqColorKeybindCount || !m_eqSessionManager) {
+        return;
+    }
+
+    const QColor labelColor = EqColorPalette::presetColorAt(colorIndex);
+    const QVector<unsigned long> processIds =
+        m_eqSessionManager->activeProcessIdsForLabelColor(labelColor);
+
+    if (processIds.isEmpty()) {
+        appendLog(QStringLiteral("INFO"),
+                  QStringLiteral("No active EQ sessions with label %1")
+                      .arg(EqColorPalette::presetColorLabel(colorIndex)));
+        return;
+    }
+
+    int toggledCount = 0;
+    for (unsigned long pid : processIds) {
+        QString errorMessage;
+        if (AudioSessionVolume::toggleMute(pid, &errorMessage)) {
+            ++toggledCount;
+        } else {
+            appendLog(QStringLiteral("WARN"),
+                      QStringLiteral("Failed to toggle mute for PID %1 (%2): %3")
+                          .arg(pid)
+                          .arg(EqColorPalette::presetColorLabel(colorIndex))
+                          .arg(errorMessage));
+        }
+    }
+
+    if (toggledCount > 0) {
+        appendLog(QStringLiteral("INFO"),
+                  QStringLiteral("Toggled mute for %1 app(s) with label %2")
+                      .arg(toggledCount)
+                      .arg(EqColorPalette::presetColorLabel(colorIndex)));
+    }
+}
+
+void MainWindow::applyKeybindSettings()
+{
+    if (!m_hotkeyManager) {
+        return;
+    }
+
+    m_hotkeyManager->apply(m_settingsStore.settings(), winId());
+}
+
 void MainWindow::applySettings(const AppSettings &settings)
 {
     m_settingsStore.setSettings(settings);
@@ -553,38 +844,139 @@ void MainWindow::applySettings(const AppSettings &settings)
     applySurroundToUi(settings.surroundEnabled, settings.surroundChannelLevels);
     applySurroundToEngine();
 
+    if (m_spectrumWidget) {
+        m_spectrumWidget->setSpectrumEnabled(settings.spectrumEnabled);
+    }
+
     QString startupError;
     if (!SettingsStore::applyStartWithWindows(settings.startWithWindows, &startupError)) {
         showCopyableError(QStringLiteral("Startup setting failed"), startupError);
     }
+
+    applyKeybindSettings();
 }
 
 void MainWindow::updateEqControlState()
 {
-    const bool running = m_eqSession && m_eqSession->isRunning();
-    const bool canEnable = m_eqSession
-                           && !running
-                           && (m_eqSession->snapshot().valid
-                               || (m_sessionList && m_sessionList->selectedProcessId() != 0));
+    const unsigned long selectedPid = m_sessionList ? m_sessionList->selectedProcessId() : 0UL;
+    const bool anyRunning = m_eqSessionManager && m_eqSessionManager->isAnyRunning();
+    const bool selectedRunning = m_eqSessionManager && selectedPid != 0
+                                 && m_eqSessionManager->isRunning(selectedPid);
+    const bool canRestore = m_eqSessionManager && m_eqSessionManager->canRestoreProcess(selectedPid);
+    const bool canEnable = m_eqSessionManager && selectedPid != 0 && !selectedRunning
+                           && m_colorPalette
+                           && (m_colorPalette->hasSelection() || canRestore);
 
     if (ui->enableEqButton) {
         ui->enableEqButton->setEnabled(canEnable);
     }
     if (ui->disableEqButton) {
-        ui->disableEqButton->setEnabled(running);
+        ui->disableEqButton->setEnabled(selectedRunning);
+    }
+    if (m_disableAllButton) {
+        m_disableAllButton->setEnabled(anyRunning);
     }
     if (m_tray) {
-        m_tray->updateEqControls(canEnable, running);
+        m_tray->updateEqSessions(m_eqSessionManager ? m_eqSessionManager->configuredTraySessions()
+                                                    : QVector<ConfiguredEqSession>{});
+    }
+    if (m_sessionList) {
+        m_sessionList->setAutoRefreshEnabled(anyRunning);
     }
 }
 
-void MainWindow::updateSpectrumUi(bool eqActive, const QString &appName)
+void MainWindow::applyGainsToSliders(const std::array<float, EqProcessor::kBandCount> &gains)
 {
-    if (!m_spectrumWidget) {
+    for (int band = 0; band < EqProcessor::kBandCount; ++band) {
+        if (m_bandSliders[static_cast<size_t>(band)]) {
+            const int value = qBound(-AppConstants::kMaxGainDb,
+                                     static_cast<int>(gains[static_cast<size_t>(band)]),
+                                     AppConstants::kMaxGainDb);
+            m_bandSliders[static_cast<size_t>(band)]->setValue(value);
+        }
+    }
+}
+
+void MainWindow::resetMasterSlider()
+{
+    if (!m_masterSlider) {
         return;
     }
 
-    m_spectrumWidget->setEqActive(eqActive);
+    m_masterSlider->blockSignals(true);
+    m_masterSlider->setValue(0);
+    m_masterSlider->blockSignals(false);
+    m_lastMasterValue = 0;
+}
+
+void MainWindow::onMasterSliderChanged(int value)
+{
+    if (m_loadingSliders) {
+        return;
+    }
+
+    const int delta = value - m_lastMasterValue;
+    m_lastMasterValue = value;
+    if (delta == 0) {
+        return;
+    }
+
+    m_loadingSliders = true;
+    for (QSlider *slider : m_bandSliders) {
+        if (!slider) {
+            continue;
+        }
+        const int next = qBound(-AppConstants::kMaxGainDb, slider->value() + delta, AppConstants::kMaxGainDb);
+        slider->setValue(next);
+    }
+    m_loadingSliders = false;
+
+    if (m_eqSessionManager && m_sessionList) {
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid != 0) {
+            m_eqSessionManager->scheduleLiveGainsForProcess(pid);
+        }
+    }
+}
+
+void MainWindow::syncSlidersToSelection()
+{
+    if (!m_eqSessionManager || !m_sessionList) {
+        return;
+    }
+
+    const unsigned long pid = m_sessionList->selectedProcessId();
+    if (m_sliderEditPid != 0 && m_sliderEditPid != pid) {
+        m_eqSessionManager->pushLiveGainsForProcess(m_sliderEditPid);
+    }
+    m_sliderEditPid = pid;
+
+    m_loadingSliders = true;
+    m_eqSessionManager->applySnapshotToUi(
+        pid,
+        [this](const std::array<float, EqProcessor::kBandCount> &gains) { applyGainsToSliders(gains); },
+        [this](bool enabled, const std::array<int, SurroundProcessor::kChannelCount> &levels) {
+            applySurroundToUi(enabled, levels);
+        });
+    m_loadingSliders = false;
+    resetMasterSlider();
+
+    updateSpectrumForSelection();
+}
+
+void MainWindow::updateSpectrumForSelection()
+{
+    if (!m_spectrumWidget || !m_sessionList || !m_eqSessionManager) {
+        return;
+    }
+
+    const unsigned long pid = m_sessionList->selectedProcessId();
+    const bool sessionActive = pid != 0 && m_eqSessionManager->isRunning(pid);
+    const bool feedSpectrum = sessionActive && m_spectrumWidget->isSpectrumEnabled();
+    const QString appName = sessionActive ? m_sessionList->displayNameForPid(pid) : QString();
+
+    m_audioEngine.setSpectrumProcessId(feedSpectrum ? pid : 0UL);
+    m_spectrumWidget->setEqActive(feedSpectrum);
     m_spectrumWidget->setActiveAppName(appName);
 }
 

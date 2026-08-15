@@ -1,6 +1,7 @@
 #include "eqprocessor.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 constexpr float kDefaultQ = 1.41f;
@@ -9,9 +10,12 @@ constexpr float kPi = 3.14159265358979323846f;
 
 float EqProcessor::Biquad::processSample(float input)
 {
-    const float output = b0 * input + z1;
-    z1 = b1 * input - a1 * output + z2;
-    z2 = b2 * input - a2 * output;
+    const int coeffIndex = activeCoeffIndex.load(std::memory_order_acquire);
+    const BiquadCoeffs &c = coeffs[static_cast<size_t>(coeffIndex)];
+
+    const float output = c.b0 * input + z1;
+    z1 = c.b1 * input - c.a1 * output + z2;
+    z2 = c.b2 * input - c.a2 * output;
     return output;
 }
 
@@ -42,6 +46,10 @@ void EqProcessor::setSampleRate(float sampleRate)
 void EqProcessor::setBandGain(int band, float gainDb)
 {
     if (band < 0 || band >= kBandCount) {
+        return;
+    }
+    const float previous = m_gainsDb[static_cast<size_t>(band)].load();
+    if (std::fabs(previous - gainDb) < 0.001f) {
         return;
     }
     m_gainsDb[static_cast<size_t>(band)].store(gainDb);
@@ -76,12 +84,17 @@ void EqProcessor::updateCoefficients(int band)
     b1 /= a0;
     b2 /= a0;
 
+    BiquadCoeffs updated;
+    updated.b0 = b0;
+    updated.b1 = b1;
+    updated.b2 = b2;
+    updated.a1 = a1 / a0;
+    updated.a2 = a2 / a0;
+
     for (Biquad *chain : {&m_biquadsLeft[static_cast<size_t>(band)], &m_biquadsRight[static_cast<size_t>(band)]}) {
-        chain->b0 = b0;
-        chain->b1 = b1;
-        chain->b2 = b2;
-        chain->a1 = a1 / a0;
-        chain->a2 = a2 / a0;
+        const int inactiveIndex = 1 - chain->activeCoeffIndex.load(std::memory_order_relaxed);
+        chain->coeffs[static_cast<size_t>(inactiveIndex)] = updated;
+        chain->activeCoeffIndex.store(inactiveIndex, std::memory_order_release);
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include "apppaths.h"
 #include "appconstants.h"
+#include "eqcolorpalette.h"
 
 #include <algorithm>
 
@@ -49,6 +50,17 @@ bool SettingsStore::load()
     m_settings.eqOutputDeviceId = root.value(QStringLiteral("eqOutputDeviceId")).toString();
     m_settings.eqOutputDeviceName = root.value(QStringLiteral("eqOutputDeviceName")).toString();
     m_settings.surroundEnabled = root.value(QStringLiteral("surroundEnabled")).toBool(false);
+    m_settings.spectrumEnabled = root.value(QStringLiteral("spectrumEnabled")).toBool(true);
+    m_settings.keybindsEnabled = root.value(QStringLiteral("keybindsEnabled")).toBool(false);
+    m_settings.eqToggleKeybind = root.value(QStringLiteral("eqToggleKeybind")).toString();
+    m_settings.outputMuteKeybind = root.value(QStringLiteral("outputMuteKeybind")).toString();
+
+    const QJsonArray colorKeybinds = root.value(QStringLiteral("eqColorKeybinds")).toArray();
+    for (int i = 0; i < AppSettings::kEqColorKeybindCount; ++i) {
+        if (i < colorKeybinds.size()) {
+            m_settings.eqColorKeybinds[static_cast<size_t>(i)] = colorKeybinds.at(i).toString();
+        }
+    }
 
     const QJsonArray levels = root.value(QStringLiteral("surroundChannelLevels")).toArray();
     for (int i = 0; i < AppSettings::kSurroundChannelCount; ++i) {
@@ -74,6 +86,16 @@ bool SettingsStore::save() const
     root.insert(QStringLiteral("eqOutputDeviceId"), m_settings.eqOutputDeviceId);
     root.insert(QStringLiteral("eqOutputDeviceName"), m_settings.eqOutputDeviceName);
     root.insert(QStringLiteral("surroundEnabled"), m_settings.surroundEnabled);
+    root.insert(QStringLiteral("spectrumEnabled"), m_settings.spectrumEnabled);
+    root.insert(QStringLiteral("keybindsEnabled"), m_settings.keybindsEnabled);
+    root.insert(QStringLiteral("eqToggleKeybind"), m_settings.eqToggleKeybind);
+    root.insert(QStringLiteral("outputMuteKeybind"), m_settings.outputMuteKeybind);
+
+    QJsonArray colorKeybinds;
+    for (const QString &keybind : m_settings.eqColorKeybinds) {
+        colorKeybinds.append(keybind);
+    }
+    root.insert(QStringLiteral("eqColorKeybinds"), colorKeybinds);
 
     QJsonArray levels;
     for (int level : m_settings.surroundChannelLevels) {

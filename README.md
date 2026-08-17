@@ -40,9 +40,9 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ```
 App A ──route──► Routing sink
-App A ──loopback──► EQ (blue) ──┐
+App A ──loopback──► EQ (ex : blue) ──┐
 App B ──route──► Routing sink   ├── mix ──► EQ output (headphones / speakers)
-App B ──loopback──► EQ (red) ───┘
+App B ──loopback──► EQ (ex : red) ───┘
 ```
 
 CurvioEQ does **not** bundle or install a virtual audio device. Install one yourself (for example VB-Cable or Voicemeeter), then select it under **Settings → Routing sink**.

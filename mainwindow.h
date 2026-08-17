@@ -82,6 +82,7 @@ private:
     void updateSpectrumForSelection();
 
     void appendLog(const QString &level, const QString &message);
+    void showDspVerificationInLog();
     void showCopyableError(const QString &title, const QString &message);
     void applySettings(const AppSettings &settings);
     void applyKeybindSettings();

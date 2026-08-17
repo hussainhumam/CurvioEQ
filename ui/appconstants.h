@@ -15,6 +15,8 @@ inline constexpr int kGainUpdateDebounceMs = 75;
 inline constexpr int kTrayMessageDurationMs = 5000;
 inline constexpr int kMaxGainDb = 20;
 inline constexpr int kSessionRingBufferFrames = 2048;
+inline constexpr int kTargetRingFillFrames = 512;
+inline constexpr int kHighRingFillFrames = 1024;
 inline constexpr int kBuiltInGamingPresetSeparatorIndex = 9;
 
 } // namespace AppConstants

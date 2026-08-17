@@ -41,7 +41,6 @@ public:
                       const QString &eqOutputDeviceId,
                       const QString &eqOutputDeviceName,
                       const QString &sinkDeviceId,
-                      const QString &sinkDeviceName,
                       QString *errorMessage);
 
     void stopSession(unsigned long processId);
@@ -52,11 +51,6 @@ public:
     void setSessionSurroundEnabled(unsigned long processId, bool enabled);
     void setSessionSurroundChannelLevels(unsigned long processId,
                                          const std::array<int, SurroundProcessor::kChannelCount> &levels);
-
-    // Legacy single-session helpers (delegate to first/only active session)
-    void setGains(const std::array<float, EqProcessor::kBandCount> &gainsDb);
-    void setSurroundEnabled(bool enabled);
-    void setSurroundChannelLevels(const std::array<int, SurroundProcessor::kChannelCount> &levels);
 
 signals:
     void statusChanged(const QString &message);
@@ -70,7 +64,6 @@ private:
     void mixerThreadMain();
     bool ensureRendererOpen(const QString &eqOutputDeviceId, const QString &eqOutputDeviceName, QString *errorMessage);
     void closeRenderer();
-    EqAudioSession *findSession(unsigned long processId);
 
     SpectrumCapture *m_spectrumCapture = nullptr;
     std::atomic<unsigned long> m_spectrumProcessId{0};

@@ -2,6 +2,7 @@
 
 #include "ui_mainwindow.h"
 
+#include "audio/dspstatus.h"
 #include "audio/log.h"
 #include "audio/audioendpointvolume.h"
 #include "audio/audiosessionvolume.h"
@@ -63,6 +64,10 @@ MainWindow::MainWindow(QWidget *parent)
     logFont.setStyleHint(QFont::Monospace);
     ui->logTextEdit->setFont(logFont);
     ui->logTextEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    ui->logTextEdit->setPlaceholderText(
+        QStringLiteral("DSP verification and app log — select and copy (Ctrl+C)"));
+
+    showDspVerificationInLog();
 
     m_bandSliders = {
         ui->verticalSlider,
@@ -686,6 +691,23 @@ void MainWindow::appendLog(const QString &level, const QString &message)
     ui->logTextEdit->appendPlainText(
         QStringLiteral("[%1] [%2] %3").arg(timestamp, level, message));
     ui->logTextEdit->verticalScrollBar()->setValue(ui->logTextEdit->verticalScrollBar()->maximum());
+}
+
+void MainWindow::showDspVerificationInLog()
+{
+    const DspStatusReport report = collectDspStatusReport(false);
+
+    ui->logTextEdit->clear();
+    for (const std::string &line : report.lines) {
+        ui->logTextEdit->appendPlainText(QString::fromStdString(line));
+    }
+
+    const QString summary = report.isHealthy()
+                                ? QStringLiteral("DSP verification passed at startup")
+                                : QStringLiteral("DSP verification failed (%1 check(s))")
+                                      .arg(report.failureCount);
+    appendLog(report.isHealthy() ? QStringLiteral("INFO") : QStringLiteral("ERROR"), summary);
+    ui->logTextEdit->verticalScrollBar()->setValue(0);
 }
 
 void MainWindow::showCopyableError(const QString &title, const QString &message)

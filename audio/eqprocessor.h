@@ -1,10 +1,12 @@
 #pragma once
 
+#include "audioprocessor.h"
+
 #include <array>
 #include <atomic>
 #include <cmath>
 
-class EqProcessor
+class EqProcessor : public AudioProcessor
 {
 public:
     static constexpr int kBandCount = 10;
@@ -17,11 +19,12 @@ public:
 
     EqProcessor();
 
-    void setSampleRate(float sampleRate);
+    void setSampleRate(float sampleRate) override;
+    void reset() override;
+    void process(float *interleavedSamples, int frameCount, int channelCount) override;
+
     void setBandGain(int band, float gainDb);
     void setGains(const std::array<float, kBandCount> &gainsDb);
-
-    void process(float *interleavedSamples, int frameCount, int channelCount);
 
 private:
     struct BiquadCoeffs {
@@ -42,10 +45,13 @@ private:
         void reset();
     };
 
-    void updateCoefficients(int band);
+    void updateCoefficients(int band, float gainDb);
+    void advanceGainRamps(int frameCount);
 
     float m_sampleRate = 48000.f;
-    std::array<std::atomic<float>, kBandCount> m_gainsDb{};
+    std::array<std::atomic<float>, kBandCount> m_targetGainsDb{};
+    std::array<float, kBandCount> m_currentGainsDb{};
+    std::array<float, kBandCount> m_gainRampPerSample{};
     std::array<Biquad, kBandCount> m_biquadsLeft{};
     std::array<Biquad, kBandCount> m_biquadsRight{};
 };

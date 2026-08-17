@@ -78,6 +78,29 @@ cmake --build --preset Desktop_Qt_6_11_1_MSVC2022_64bit_Release
 
 Output: `dist/bin/CurvioEQ.exe`
 
+Every build runs DSP verification automatically and prints DSP state in the terminal; the build fails if the audio engine is broken.
+
+Example build output:
+
+```
+=== CurvioEQ DSP State ===
+  EQ topology      : parallel peaking (10 bands, +/-20 dB)
+  ...
+DSP state: HEALTHY (all checks passed)
+```
+
+To check DSP state manually:
+
+```bat
+dist\bin\CurvioEQ_DspVerify.exe
+```
+
+Or from Command Prompt:
+
+```bat
+CurvioEQ.exe --dsp-status
+```
+
 ## Installer
 
 Build a shareable Windows installer:
@@ -98,6 +121,7 @@ See [`installer/README.md`](installer/README.md) for details.
 
 | Flag | Purpose |
 |------|---------|
+| `--dsp-status` | Print DSP architecture and run verification checks (terminal) |
 | `--startup` | Start hidden to the system tray (used by Windows autostart only) |
 | `--clear-all-routing` | Clear all Windows per-app output overrides (utility) |
 | `--test-route <pid> <deviceId>` | Test routing for a process (utility) |

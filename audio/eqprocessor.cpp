@@ -6,6 +6,7 @@
 namespace {
 constexpr float kDefaultQ = 1.41f;
 constexpr float kPi = 3.14159265358979323846f;
+constexpr float kGainRampSeconds = 0.015f;
 }
 
 float EqProcessor::Biquad::processSample(float input)
@@ -27,9 +28,11 @@ void EqProcessor::Biquad::reset()
 
 EqProcessor::EqProcessor()
 {
-    for (auto &gain : m_gainsDb) {
+    for (auto &gain : m_targetGainsDb) {
         gain.store(0.f);
     }
+    m_currentGainsDb.fill(0.f);
+    m_gainRampPerSample.fill(0.f);
     setSampleRate(48000.f);
 }
 
@@ -37,7 +40,16 @@ void EqProcessor::setSampleRate(float sampleRate)
 {
     m_sampleRate = std::max(sampleRate, 1.f);
     for (int band = 0; band < kBandCount; ++band) {
-        updateCoefficients(band);
+        m_currentGainsDb[static_cast<size_t>(band)] = m_targetGainsDb[static_cast<size_t>(band)].load();
+        updateCoefficients(band, m_currentGainsDb[static_cast<size_t>(band)]);
+        m_biquadsLeft[static_cast<size_t>(band)].reset();
+        m_biquadsRight[static_cast<size_t>(band)].reset();
+    }
+}
+
+void EqProcessor::reset()
+{
+    for (int band = 0; band < kBandCount; ++band) {
         m_biquadsLeft[static_cast<size_t>(band)].reset();
         m_biquadsRight[static_cast<size_t>(band)].reset();
     }
@@ -48,12 +60,7 @@ void EqProcessor::setBandGain(int band, float gainDb)
     if (band < 0 || band >= kBandCount) {
         return;
     }
-    const float previous = m_gainsDb[static_cast<size_t>(band)].load();
-    if (std::fabs(previous - gainDb) < 0.001f) {
-        return;
-    }
-    m_gainsDb[static_cast<size_t>(band)].store(gainDb);
-    updateCoefficients(band);
+    m_targetGainsDb[static_cast<size_t>(band)].store(gainDb);
 }
 
 void EqProcessor::setGains(const std::array<float, kBandCount> &gainsDb)
@@ -63,9 +70,8 @@ void EqProcessor::setGains(const std::array<float, kBandCount> &gainsDb)
     }
 }
 
-void EqProcessor::updateCoefficients(int band)
+void EqProcessor::updateCoefficients(int band, float gainDb)
 {
-    const float gainDb = m_gainsDb[static_cast<size_t>(band)].load();
     const float frequency = kBandFreqs[static_cast<size_t>(band)];
     const float A = std::pow(10.f, gainDb / 40.f);
     const float omega = 2.f * kPi * frequency / m_sampleRate;
@@ -98,25 +104,57 @@ void EqProcessor::updateCoefficients(int band)
     }
 }
 
+void EqProcessor::advanceGainRamps(int frameCount)
+{
+    const float rampStep = kGainRampSeconds * m_sampleRate;
+    for (int band = 0; band < kBandCount; ++band) {
+        const float target = m_targetGainsDb[static_cast<size_t>(band)].load();
+        float &current = m_currentGainsDb[static_cast<size_t>(band)];
+        if (std::fabs(current - target) < 0.001f) {
+            m_gainRampPerSample[static_cast<size_t>(band)] = 0.f;
+            if (current != target) {
+                current = target;
+                updateCoefficients(band, current);
+            }
+            continue;
+        }
+
+        m_gainRampPerSample[static_cast<size_t>(band)] = (target - current) / rampStep;
+        current += m_gainRampPerSample[static_cast<size_t>(band)] * static_cast<float>(frameCount);
+
+        if ((m_gainRampPerSample[static_cast<size_t>(band)] > 0.f && current >= target)
+            || (m_gainRampPerSample[static_cast<size_t>(band)] < 0.f && current <= target)) {
+            current = target;
+            m_gainRampPerSample[static_cast<size_t>(band)] = 0.f;
+        }
+
+        updateCoefficients(band, current);
+    }
+}
+
 void EqProcessor::process(float *interleavedSamples, int frameCount, int channelCount)
 {
     if (!interleavedSamples || frameCount <= 0 || channelCount <= 0) {
         return;
     }
 
+    advanceGainRamps(frameCount);
+
     const int channelsToProcess = std::min(channelCount, kMaxChannels);
 
     for (int frame = 0; frame < frameCount; ++frame) {
         for (int channel = 0; channel < channelsToProcess; ++channel) {
             const int index = frame * channelCount + channel;
-            float sample = interleavedSamples[index];
+            const float dry = interleavedSamples[index];
             auto &biquads = (channel == 0) ? m_biquadsLeft : m_biquadsRight;
 
+            float output = dry;
             for (int band = 0; band < kBandCount; ++band) {
-                sample = biquads[static_cast<size_t>(band)].processSample(sample);
+                const float peaked = biquads[static_cast<size_t>(band)].processSample(dry);
+                output += (peaked - dry);
             }
 
-            interleavedSamples[index] = sample;
+            interleavedSamples[index] = output;
         }
     }
 }

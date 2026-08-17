@@ -694,7 +694,7 @@
        <bool>true</bool>
       </property>
       <property name="placeholderText">
-       <string>Log output — select and copy (Ctrl+C)</string>
+       <string>DSP verification and app log — select and copy (Ctrl+C)</string>
       </property>
      </widget>
     </item>

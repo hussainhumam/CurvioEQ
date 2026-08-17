@@ -7,8 +7,9 @@
 #include <mmdeviceapi.h>
 #include <ksmedia.h>
 
-#include <cstring>
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -148,13 +149,35 @@ bool WasapiRenderer::open(const QString &deviceId,
         return false;
     }
 
+    m_bufferEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!m_bufferEvent) {
+        const QString message = QStringLiteral("[WasapiRenderer] CreateEvent failed");
+        AudioLog::error(tag, message);
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        close();
+        return false;
+    }
+
+    const DWORD eventFlags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
     hr = m_audioClient->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
-        AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+        eventFlags,
         0,
         0,
         m_format,
         nullptr);
+    m_eventDriven = SUCCEEDED(hr);
+    if (FAILED(hr)) {
+        hr = m_audioClient->Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+            0,
+            0,
+            m_format,
+            nullptr);
+    }
     if (FAILED(hr)) {
         const QString message = QStringLiteral("[WasapiRenderer] IAudioClient::Initialize failed: %1")
                                     .arg(AudioLog::hresultToString(hr));
@@ -164,6 +187,14 @@ bool WasapiRenderer::open(const QString &deviceId,
         }
         close();
         return false;
+    }
+
+    if (m_eventDriven) {
+        hr = m_audioClient->SetEventHandle(m_bufferEvent);
+        if (FAILED(hr)) {
+            AudioLog::warn(tag, QStringLiteral("SetEventHandle failed; falling back to polling"));
+            m_eventDriven = false;
+        }
     }
 
     hr = m_audioClient->GetBufferSize(&m_bufferFrameCount);
@@ -178,6 +209,21 @@ bool WasapiRenderer::open(const QString &deviceId,
         return false;
     }
 
+    REFERENCE_TIME defaultPeriod = 0;
+    REFERENCE_TIME minimumPeriod = 0;
+    hr = m_audioClient->GetDevicePeriod(&defaultPeriod, &minimumPeriod);
+    m_sampleRate = static_cast<float>(m_format->nSamplesPerSec);
+    if (SUCCEEDED(hr) && defaultPeriod > 0 && m_sampleRate > 0.f) {
+        const double periodFrames =
+            (static_cast<double>(defaultPeriod) * static_cast<double>(m_sampleRate)) / 10000000.0;
+        m_periodFrameCount = static_cast<UINT32>(std::max(1.0, std::round(periodFrames)));
+    } else {
+        m_periodFrameCount = std::max<UINT32>(1, static_cast<UINT32>(m_sampleRate / 100.f));
+    }
+    if (m_bufferFrameCount > 1) {
+        m_periodFrameCount = std::min(m_periodFrameCount, m_bufferFrameCount / 2);
+    }
+
     hr = m_audioClient->GetService(__uuidof(IAudioRenderClient),
                                    reinterpret_cast<void **>(&m_renderClient));
     if (FAILED(hr)) {
@@ -187,6 +233,16 @@ bool WasapiRenderer::open(const QString &deviceId,
         if (errorMessage) {
             *errorMessage = message;
         }
+        close();
+        return false;
+    }
+
+    m_channelCount = m_format->nChannels;
+    m_formatIsFloat = formatIsFloat(m_format);
+    buildLogicalChannelMap();
+    m_upmixBuffer.assign(static_cast<size_t>(m_bufferFrameCount * m_channelCount), 0.f);
+
+    if (!prerollSilence(errorMessage)) {
         close();
         return false;
     }
@@ -203,22 +259,19 @@ bool WasapiRenderer::open(const QString &deviceId,
         return false;
     }
 
-    m_sampleRate = static_cast<float>(m_format->nSamplesPerSec);
-    m_channelCount = m_format->nChannels;
-    m_formatIsFloat = formatIsFloat(m_format);
-    buildLogicalChannelMap();
-    m_upmixBuffer.assign(static_cast<size_t>(m_bufferFrameCount * m_channelCount), 0.f);
-
-    AudioLog::info(tag, QStringLiteral("Render opened: %1 Hz, %2 channels, buffer=%3 frames, float=%4")
+    AudioLog::info(tag, QStringLiteral("Render opened: %1 Hz, %2 channels, period=%3 frames, buffer=%4 frames, event=%5, float=%6")
                              .arg(m_sampleRate)
                              .arg(m_channelCount)
+                             .arg(m_periodFrameCount)
                              .arg(m_bufferFrameCount)
+                             .arg(m_eventDriven)
                              .arg(m_formatIsFloat));
     return true;
 }
 
 void WasapiRenderer::close()
 {
+    interruptWait();
     if (m_audioClient) {
         m_audioClient->Stop();
     }
@@ -234,13 +287,137 @@ void WasapiRenderer::close()
         CoTaskMemFree(m_format);
         m_format = nullptr;
     }
+    if (m_bufferEvent) {
+        CloseHandle(m_bufferEvent);
+        m_bufferEvent = nullptr;
+    }
     m_sampleRate = 0.f;
     m_channelCount = 0;
     m_bufferFrameCount = 0;
+    m_periodFrameCount = 480;
     m_formatIsFloat = true;
+    m_eventDriven = false;
     m_upmixBuffer.clear();
     m_logicalToDevice.fill(-1);
     m_hasLogicalChannelMap = false;
+}
+
+void WasapiRenderer::interruptWait()
+{
+    if (m_bufferEvent) {
+        SetEvent(m_bufferEvent);
+    }
+}
+
+UINT32 WasapiRenderer::availableWriteFrames() const
+{
+    if (!m_audioClient || m_bufferFrameCount == 0) {
+        return 0;
+    }
+
+    UINT32 padding = 0;
+    if (FAILED(m_audioClient->GetCurrentPadding(&padding))) {
+        return 0;
+    }
+    if (padding >= m_bufferFrameCount) {
+        return 0;
+    }
+    return m_bufferFrameCount - padding;
+}
+
+bool WasapiRenderer::waitForNextPeriod(DWORD timeoutMs)
+{
+    if (m_eventDriven && m_bufferEvent) {
+        const DWORD result = WaitForSingleObject(m_bufferEvent, timeoutMs);
+        return result == WAIT_OBJECT_0 || result == WAIT_TIMEOUT;
+    }
+
+    const DWORD sleepMs = m_sampleRate > 0.f
+                              ? std::max<DWORD>(1, static_cast<DWORD>((m_periodFrameCount * 1000.f) / m_sampleRate))
+                              : 10;
+    Sleep(std::min(sleepMs, timeoutMs == INFINITE ? sleepMs : timeoutMs));
+    return true;
+}
+
+bool WasapiRenderer::prerollSilence(QString *errorMessage)
+{
+    if (!m_renderClient || m_bufferFrameCount == 0) {
+        return true;
+    }
+
+    BYTE *data = nullptr;
+    HRESULT hr = m_renderClient->GetBuffer(m_bufferFrameCount, &data);
+    if (FAILED(hr)) {
+        const QString message = QStringLiteral("[WasapiRenderer] Preroll GetBuffer failed: %1")
+                                    .arg(AudioLog::hresultToString(hr));
+        AudioLog::error(QStringLiteral("WasapiRenderer"), message);
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    }
+
+    hr = m_renderClient->ReleaseBuffer(m_bufferFrameCount, AUDCLNT_BUFFERFLAGS_SILENT);
+    if (FAILED(hr)) {
+        const QString message = QStringLiteral("[WasapiRenderer] Preroll ReleaseBuffer failed: %1")
+                                    .arg(AudioLog::hresultToString(hr));
+        AudioLog::error(QStringLiteral("WasapiRenderer"), message);
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool WasapiRenderer::copyFramesToDevice(const float *source, int framesToWrite, QString *errorMessage)
+{
+    BYTE *data = nullptr;
+    HRESULT hr = m_renderClient->GetBuffer(static_cast<UINT32>(framesToWrite), &data);
+    if (FAILED(hr)) {
+        const QString message = QStringLiteral("[WasapiRenderer] GetBuffer failed: %1")
+                                    .arg(AudioLog::hresultToString(hr));
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    }
+
+    if (m_formatIsFloat) {
+        std::memcpy(
+            data,
+            source,
+            static_cast<size_t>(framesToWrite * m_channelCount) * sizeof(float));
+    } else if (m_format->wBitsPerSample == 16) {
+        auto *destination = reinterpret_cast<int16_t *>(data);
+        for (int frame = 0; frame < framesToWrite; ++frame) {
+            for (int channel = 0; channel < m_channelCount; ++channel) {
+                const float sample = source[frame * m_channelCount + channel];
+                const float clamped = std::max(-1.f, std::min(1.f, sample));
+                destination[frame * m_channelCount + channel] =
+                    static_cast<int16_t>(clamped * 32767.f);
+            }
+        }
+    } else {
+        const QString message = QStringLiteral("[WasapiRenderer] Unsupported render format (bits=%1)")
+                                    .arg(m_format->wBitsPerSample);
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        m_renderClient->ReleaseBuffer(static_cast<UINT32>(framesToWrite), 0);
+        return false;
+    }
+
+    hr = m_renderClient->ReleaseBuffer(static_cast<UINT32>(framesToWrite), 0);
+    if (FAILED(hr)) {
+        const QString message = QStringLiteral("[WasapiRenderer] ReleaseBuffer failed: %1")
+                                    .arg(AudioLog::hresultToString(hr));
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    }
+    return true;
 }
 
 void WasapiRenderer::buildLogicalChannelMap()
@@ -326,84 +503,25 @@ bool WasapiRenderer::write(const float *interleavedBuffer, int frameCount, int i
         return false;
     }
 
+    const UINT32 availableFrames = availableWriteFrames();
+    if (availableFrames == 0) {
+        return true;
+    }
+
+    const int framesToWrite = static_cast<int>(std::min({
+        availableFrames,
+        static_cast<UINT32>(frameCount),
+        m_periodFrameCount,
+    }));
+    if (framesToWrite <= 0) {
+        return true;
+    }
+
     const float *writeSource = interleavedBuffer;
     if (inputChannelCount != m_channelCount) {
-        upmixToDeviceFormat(interleavedBuffer, frameCount, inputChannelCount);
+        upmixToDeviceFormat(interleavedBuffer, framesToWrite, inputChannelCount);
         writeSource = m_upmixBuffer.data();
     }
 
-    int framesWritten = 0;
-    while (framesWritten < frameCount) {
-        UINT32 padding = 0;
-        HRESULT hr = m_audioClient->GetCurrentPadding(&padding);
-        if (FAILED(hr)) {
-            const QString message = QStringLiteral("[WasapiRenderer] GetCurrentPadding failed: %1")
-                                        .arg(AudioLog::hresultToString(hr));
-            if (errorMessage) {
-                *errorMessage = message;
-            }
-            return false;
-        }
-
-        const UINT32 availableFrames = m_bufferFrameCount - padding;
-        if (availableFrames == 0) {
-            Sleep(1);
-            continue;
-        }
-
-        const int framesToWrite = static_cast<int>(std::min<UINT32>(
-            availableFrames,
-            static_cast<UINT32>(frameCount - framesWritten)));
-
-        BYTE *data = nullptr;
-        hr = m_renderClient->GetBuffer(static_cast<UINT32>(framesToWrite), &data);
-        if (FAILED(hr)) {
-            const QString message = QStringLiteral("[WasapiRenderer] GetBuffer failed: %1")
-                                        .arg(AudioLog::hresultToString(hr));
-            if (errorMessage) {
-                *errorMessage = message;
-            }
-            return false;
-        }
-
-        const float *source = writeSource + (framesWritten * m_channelCount);
-        if (m_formatIsFloat) {
-            std::memcpy(
-                data,
-                source,
-                static_cast<size_t>(framesToWrite * m_channelCount) * sizeof(float));
-        } else if (m_format->wBitsPerSample == 16) {
-            auto *destination = reinterpret_cast<int16_t *>(data);
-            for (int frame = 0; frame < framesToWrite; ++frame) {
-                for (int channel = 0; channel < m_channelCount; ++channel) {
-                    const float sample = source[frame * m_channelCount + channel];
-                    const float clamped = std::max(-1.f, std::min(1.f, sample));
-                    destination[frame * m_channelCount + channel] =
-                        static_cast<int16_t>(clamped * 32767.f);
-                }
-            }
-        } else {
-            const QString message = QStringLiteral("[WasapiRenderer] Unsupported render format (bits=%1)")
-                                        .arg(m_format->wBitsPerSample);
-            if (errorMessage) {
-                *errorMessage = message;
-            }
-            m_renderClient->ReleaseBuffer(static_cast<UINT32>(framesToWrite), 0);
-            return false;
-        }
-
-        hr = m_renderClient->ReleaseBuffer(static_cast<UINT32>(framesToWrite), 0);
-        if (FAILED(hr)) {
-            const QString message = QStringLiteral("[WasapiRenderer] ReleaseBuffer failed: %1")
-                                        .arg(AudioLog::hresultToString(hr));
-            if (errorMessage) {
-                *errorMessage = message;
-            }
-            return false;
-        }
-
-        framesWritten += framesToWrite;
-    }
-
-    return true;
+    return copyFramesToDevice(writeSource, framesToWrite, errorMessage);
 }

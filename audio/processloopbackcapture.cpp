@@ -8,6 +8,7 @@
 #include <audioclientactivationparams.h>
 #include <ksmedia.h>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
@@ -178,30 +179,6 @@ private:
     bool m_completed = false;
 };
 
-bool waveFormatToFloatInfo(const WAVEFORMATEX *format, float *sampleRate, int *channelCount, int *bytesPerFrame)
-{
-    if (!format || !sampleRate || !channelCount || !bytesPerFrame) {
-        return false;
-    }
-
-    *channelCount = format->nChannels;
-    *bytesPerFrame = format->nBlockAlign;
-    *sampleRate = static_cast<float>(format->nSamplesPerSec);
-
-    if (format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
-        return true;
-    }
-
-    if (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
-        const auto *waveFormatExtensible = reinterpret_cast<const WAVEFORMATEXTENSIBLE *>(format);
-        if (IsEqualGUID(waveFormatExtensible->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 void convertPcm16ToFloat(const BYTE *source, float *destination, int sampleCount)
 {
     const auto *samples = reinterpret_cast<const int16_t *>(source);
@@ -225,7 +202,7 @@ ProcessLoopbackCapture::~ProcessLoopbackCapture()
     close();
 }
 
-bool ProcessLoopbackCapture::open(unsigned long processId, QString *errorMessage)
+bool ProcessLoopbackCapture::open(unsigned long processId, float preferredSampleRate, QString *errorMessage)
 {
     const QString tag = QStringLiteral("LoopbackCapture");
     close();
@@ -293,7 +270,18 @@ bool ProcessLoopbackCapture::open(unsigned long processId, QString *errorMessage
         return false;
     }
 
-    const DWORD sampleRates[] = {44100, 48000};
+    std::vector<DWORD> sampleRates;
+    const DWORD preferredRate = preferredSampleRate >= 44100.f ? static_cast<DWORD>(preferredSampleRate + 0.5f)
+                                                               : 0;
+    if (preferredRate == 48000 || preferredRate == 44100) {
+        sampleRates.push_back(preferredRate);
+    }
+    for (const DWORD fallbackRate : {48000U, 44100U}) {
+        if (std::find(sampleRates.begin(), sampleRates.end(), fallbackRate) == sampleRates.end()) {
+            sampleRates.push_back(fallbackRate);
+        }
+    }
+
     HRESULT hrInit = E_FAIL;
     bool initialized = false;
 
@@ -394,6 +382,73 @@ void ProcessLoopbackCapture::close()
     m_sampleRate = 0.f;
     m_channelCount = 0;
     m_bytesPerFrame = 0;
+    m_pendingFrames.clear();
+}
+
+bool ProcessLoopbackCapture::copyPendingFrames(float *interleavedBuffer, int frameCount, int *totalFramesRead)
+{
+    if (!totalFramesRead || m_pendingFrames.empty() || m_channelCount <= 0) {
+        return true;
+    }
+
+    const int pendingFrameCount =
+        static_cast<int>(m_pendingFrames.size() / static_cast<size_t>(m_channelCount));
+    const int framesToCopy = std::min(frameCount - *totalFramesRead, pendingFrameCount);
+    if (framesToCopy <= 0) {
+        return true;
+    }
+
+    const size_t sampleCount = static_cast<size_t>(framesToCopy * m_channelCount);
+    std::memcpy(interleavedBuffer + static_cast<size_t>(*totalFramesRead * m_channelCount),
+                m_pendingFrames.data(),
+                sampleCount * sizeof(float));
+
+    m_pendingFrames.erase(m_pendingFrames.begin(),
+                          m_pendingFrames.begin() + static_cast<ptrdiff_t>(sampleCount));
+    *totalFramesRead += framesToCopy;
+    return true;
+}
+
+bool ProcessLoopbackCapture::appendPacketFrames(const BYTE *data,
+                                                UINT32 numFramesAvailable,
+                                                DWORD flags,
+                                                QString *errorMessage)
+{
+    if (numFramesAvailable == 0 || m_channelCount <= 0) {
+        return true;
+    }
+
+    const size_t sampleCount = static_cast<size_t>(numFramesAvailable * m_channelCount);
+    const size_t previousSize = m_pendingFrames.size();
+    m_pendingFrames.resize(previousSize + sampleCount);
+
+    float *writePtr = m_pendingFrames.data() + previousSize;
+    if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+        std::memset(writePtr, 0, sampleCount * sizeof(float));
+        return true;
+    }
+
+    if (m_format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT
+        || (m_format->wFormatTag == WAVE_FORMAT_EXTENSIBLE && m_format->wBitsPerSample == 32)) {
+        std::memcpy(writePtr, data, sampleCount * sizeof(float));
+        return true;
+    }
+
+    if (m_format->wBitsPerSample == 16) {
+        convertPcm16ToFloat(data, writePtr, static_cast<int>(sampleCount));
+        return true;
+    }
+
+    if (m_format->wBitsPerSample == 32) {
+        convertPcm32ToFloat(data, writePtr, static_cast<int>(sampleCount));
+        return true;
+    }
+
+    const QString message = QStringLiteral("Unsupported bit depth: %1").arg(m_format->wBitsPerSample);
+    if (errorMessage) {
+        *errorMessage = message;
+    }
+    return false;
 }
 
 bool ProcessLoopbackCapture::read(float *interleavedBuffer, int frameCount, int *framesRead, QString *errorMessage)
@@ -406,6 +461,9 @@ bool ProcessLoopbackCapture::read(float *interleavedBuffer, int frameCount, int 
     }
 
     int totalFramesRead = 0;
+    if (!copyPendingFrames(interleavedBuffer, frameCount, &totalFramesRead)) {
+        return false;
+    }
 
     while (totalFramesRead < frameCount) {
         UINT32 packetLength = 0;
@@ -460,6 +518,15 @@ bool ProcessLoopbackCapture::read(float *interleavedBuffer, int frameCount, int 
             return false;
         }
 
+        if (framesToCopy < static_cast<int>(numFramesAvailable)) {
+            const BYTE *remainingData = data + static_cast<size_t>(framesToCopy * m_bytesPerFrame);
+            const UINT32 remainingFrames = numFramesAvailable - static_cast<UINT32>(framesToCopy);
+            if (!appendPacketFrames(remainingData, remainingFrames, flags, errorMessage)) {
+                m_captureClient->ReleaseBuffer(numFramesAvailable);
+                return false;
+            }
+        }
+
         hr = m_captureClient->ReleaseBuffer(numFramesAvailable);
         if (FAILED(hr)) {
             const QString message = QStringLiteral("ReleaseBuffer failed: %1")
@@ -471,6 +538,10 @@ bool ProcessLoopbackCapture::read(float *interleavedBuffer, int frameCount, int 
         }
 
         totalFramesRead += framesToCopy;
+
+        if (!copyPendingFrames(interleavedBuffer, frameCount, &totalFramesRead)) {
+            return false;
+        }
     }
 
     if (framesRead) {

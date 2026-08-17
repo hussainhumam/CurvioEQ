@@ -173,7 +173,6 @@ bool EqSessionManager::enableForProcess(unsigned long processId, const QColor &l
                                 outputDeviceId,
                                 outputDeviceName,
                                 sinkDeviceId,
-                                sinkDeviceName,
                                 &errorMessage)) {
         emit errorOccurred(QStringLiteral("EQ failed to start"), errorMessage);
         return false;
@@ -308,7 +307,14 @@ void EqSessionManager::pushLiveGainsForProcess(unsigned long processId)
         m_gainDebounceTimer->stop();
         m_pendingGainPid = 0;
     }
-    saveDraftForProcess(processId, m_gainReader(), m_surroundStateReader ? m_surroundStateReader() : std::make_pair(false, std::array<int, SurroundProcessor::kChannelCount>{}));
+
+    const auto gains = m_gainReader();
+    const auto surround = m_surroundStateReader
+                              ? m_surroundStateReader()
+                              : std::make_pair(false, std::array<int, SurroundProcessor::kChannelCount>{});
+    for (unsigned long pid : linkedProcessIds(processId)) {
+        saveDraftForProcess(pid, gains, surround);
+    }
 }
 
 void EqSessionManager::scheduleLiveGainsForProcess(unsigned long processId)
@@ -325,9 +331,32 @@ void EqSessionManager::pushLiveSurroundForProcess(unsigned long processId)
     if (!m_surroundStateReader || processId == 0) {
         return;
     }
-    if (m_gainReader) {
-        saveDraftForProcess(processId, m_gainReader(), m_surroundStateReader());
+    if (!m_gainReader) {
+        return;
     }
+
+    const auto gains = m_gainReader();
+    const auto surround = m_surroundStateReader();
+    for (unsigned long pid : linkedProcessIds(processId)) {
+        saveDraftForProcess(pid, gains, surround);
+    }
+}
+
+QVector<unsigned long> EqSessionManager::linkedProcessIds(unsigned long processId) const
+{
+    QVector<unsigned long> processIds;
+    if (processId == 0) {
+        return processIds;
+    }
+
+    const QColor labelColor = m_snapshots.value(processId).labelColor;
+    if (labelColor.isValid()) {
+        processIds = activeProcessIdsForLabelColor(labelColor);
+    }
+    if (!processIds.contains(processId)) {
+        processIds.push_back(processId);
+    }
+    return processIds;
 }
 
 void EqSessionManager::onSessionStopped(unsigned long processId)

@@ -34,7 +34,18 @@ qt_add_executable(CurvioEQ
     audio/surroundprocessor.h
     audio/eqaudiosession.cpp
     audio/eqaudiosession.h
-    audio/audioringbuffer.h
+    audio/audioprocessor.h
+    audio/audiopipeline.cpp
+    audio/audiopipeline.h
+    audio/resampler.cpp
+    audio/resampler.h
+    audio/spscringbuffer.h
+    audio/clocksync.h
+    audio/mixlimiter.cpp
+    audio/mixlimiter.h
+    audio/audiothreadutils.h
+    audio/dspstatus.cpp
+    audio/dspstatus.h
     audio/audioengine.cpp
     audio/audioengine.h
     audio/audiopolicyrouter.cpp
@@ -115,3 +126,27 @@ qt_generate_deploy_app_script(
     NO_UNSUPPORTED_PLATFORM_ERROR
 )
 install(SCRIPT ${deploy_script})
+
+enable_testing()
+
+add_executable(CurvioEQ_DspVerify tools/dsp_verify.cpp
+    audio/dspstatus.cpp
+    audio/eqprocessor.cpp
+    audio/audiopipeline.cpp
+    audio/resampler.cpp
+)
+target_include_directories(CurvioEQ_DspVerify PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(CurvioEQ_DspVerify PRIVATE NOMINMAX)
+
+add_dependencies(CurvioEQ CurvioEQ_DspVerify)
+
+add_custom_command(TARGET CurvioEQ POST_BUILD
+    COMMAND "$<TARGET_FILE:CurvioEQ_DspVerify>"
+    COMMENT "Verifying DSP engine (EQ, resampler, ring buffer)..."
+    VERBATIM)
+
+add_test(NAME DspVerify COMMAND CurvioEQ_DspVerify)
+
+install(TARGETS CurvioEQ_DspVerify
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)

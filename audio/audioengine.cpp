@@ -1,18 +1,32 @@
 #include "audioengine.h"
 
+#include "audiothreadutils.h"
 #include "eqaudiosession.h"
 #include "log.h"
+#include "mixlimiter.h"
 #include "processloopbackcapture.h"
+#include "ui/appconstants.h"
 #include "wasapirenderer.h"
 
 #include <QMetaObject>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <avrt.h>
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <unordered_map>
 #include <vector>
+
+namespace {
+
+struct SessionMixState {
+    bool prefilled = false;
+};
+
+} // namespace
 
 AudioEngine::AudioEngine(QObject *parent)
     : QObject(parent)
@@ -111,6 +125,9 @@ bool AudioEngine::ensureRendererOpen(const QString &eqOutputDeviceId,
 void AudioEngine::closeRenderer()
 {
     m_mixerStopRequested.store(true);
+    if (m_renderer) {
+        m_renderer->interruptWait();
+    }
     if (m_mixerThread.joinable()) {
         m_mixerThread.join();
     }
@@ -130,7 +147,6 @@ bool AudioEngine::startSession(unsigned long processId,
                                const QString &eqOutputDeviceId,
                                const QString &eqOutputDeviceName,
                                const QString &sinkDeviceId,
-                               const QString &sinkDeviceName,
                                QString *errorMessage)
 {
     const QString tag = QStringLiteral("AudioEngine");
@@ -173,22 +189,22 @@ bool AudioEngine::startSession(unsigned long processId,
 
     auto session = std::make_unique<EqAudioSession>();
     QString startError;
-    if (!session->start(processId,
-                        gainsDb,
-                        surroundEnabled,
-                        surroundLevels,
-                        m_renderer->sampleRate(),
-                        m_renderer->channelCount(),
-                        sinkDeviceId,
-                        sinkDeviceName,
-                        m_spectrumCapture,
-                        &m_spectrumProcessId,
-                        [this](unsigned long pid) {
-                            QMetaObject::invokeMethod(this,
-                                                      [this, pid]() { handleSessionThreadEnded(pid); },
-                                                      Qt::QueuedConnection);
-                        },
-                        &startError)) {
+    SessionStartConfig startConfig;
+    startConfig.processId = processId;
+    startConfig.gainsDb = gainsDb;
+    startConfig.surroundEnabled = surroundEnabled;
+    startConfig.surroundLevels = surroundLevels;
+    startConfig.mixSampleRate = m_renderer->sampleRate();
+    startConfig.mixChannelCount = m_renderer->channelCount();
+    startConfig.sinkDeviceId = sinkDeviceId;
+    startConfig.spectrumCapture = m_spectrumCapture;
+    startConfig.spectrumProcessId = &m_spectrumProcessId;
+    startConfig.onThreadFinished = [this](unsigned long pid) {
+        QMetaObject::invokeMethod(this,
+                                  [this, pid]() { handleSessionThreadEnded(pid); },
+                                  Qt::QueuedConnection);
+    };
+    if (!session->start(std::move(startConfig), &startError)) {
         if (errorMessage) {
             *errorMessage = startError;
         }
@@ -325,87 +341,58 @@ void AudioEngine::pruneEndedSessions()
     }
 }
 
-EqAudioSession *AudioEngine::findSession(unsigned long processId)
+void AudioEngine::setSessionGains(unsigned long processId, const std::array<float, EqProcessor::kBandCount> &gainsDb)
 {
     std::lock_guard<std::mutex> lock(m_sessionsMutex);
     for (auto &session : m_sessions) {
         if (session && session->processId() == processId) {
-            return session.get();
+            session->setGains(gainsDb);
+            return;
         }
-    }
-    return nullptr;
-}
-
-void AudioEngine::setSessionGains(unsigned long processId, const std::array<float, EqProcessor::kBandCount> &gainsDb)
-{
-    if (EqAudioSession *session = findSession(processId)) {
-        session->setGains(gainsDb);
     }
 }
 
 void AudioEngine::setSessionSurroundEnabled(unsigned long processId, bool enabled)
 {
-    if (EqAudioSession *session = findSession(processId)) {
-        session->setSurroundEnabled(enabled);
+    std::lock_guard<std::mutex> lock(m_sessionsMutex);
+    for (auto &session : m_sessions) {
+        if (session && session->processId() == processId) {
+            session->setSurroundEnabled(enabled);
+            return;
+        }
     }
 }
 
 void AudioEngine::setSessionSurroundChannelLevels(unsigned long processId,
                                                   const std::array<int, SurroundProcessor::kChannelCount> &levels)
 {
-    if (EqAudioSession *session = findSession(processId)) {
-        session->setSurroundChannelLevels(levels);
-    }
-}
-
-void AudioEngine::setGains(const std::array<float, EqProcessor::kBandCount> &gainsDb)
-{
-    const unsigned long pid = m_spectrumProcessId.load();
-    if (pid != 0) {
-        setSessionGains(pid, gainsDb);
-        return;
-    }
     std::lock_guard<std::mutex> lock(m_sessionsMutex);
-    if (!m_sessions.empty() && m_sessions.front()) {
-        m_sessions.front()->setGains(gainsDb);
-    }
-}
-
-void AudioEngine::setSurroundEnabled(bool enabled)
-{
-    const unsigned long pid = m_spectrumProcessId.load();
-    if (pid != 0) {
-        setSessionSurroundEnabled(pid, enabled);
-        return;
-    }
-    std::lock_guard<std::mutex> lock(m_sessionsMutex);
-    if (!m_sessions.empty() && m_sessions.front()) {
-        m_sessions.front()->setSurroundEnabled(enabled);
-    }
-}
-
-void AudioEngine::setSurroundChannelLevels(const std::array<int, SurroundProcessor::kChannelCount> &levels)
-{
-    const unsigned long pid = m_spectrumProcessId.load();
-    if (pid != 0) {
-        setSessionSurroundChannelLevels(pid, levels);
-        return;
-    }
-    std::lock_guard<std::mutex> lock(m_sessionsMutex);
-    if (!m_sessions.empty() && m_sessions.front()) {
-        m_sessions.front()->setSurroundChannelLevels(levels);
+    for (auto &session : m_sessions) {
+        if (session && session->processId() == processId) {
+            session->setSurroundChannelLevels(levels);
+            return;
+        }
     }
 }
 
 void AudioEngine::mixerThreadMain()
 {
+    AudioThreadUtils::enableFlushToZero();
+
+    DWORD taskIndex = 0;
+    HANDLE taskHandle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+
     const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool comInitializedOnThread = SUCCEEDED(hr);
+
+    MixLimiter mixLimiter;
+    mixLimiter.setSampleRate(48000.f);
 
     std::vector<float> mixBuffer;
     std::vector<float> sessionScratch;
     int lastFrameCount = 0;
     int lastChannelCount = 0;
+    std::unordered_map<std::shared_ptr<SpscRingBuffer>, SessionMixState> sessionMixStates;
 
     while (!m_mixerStopRequested.load()) {
         if (!m_renderer || !m_renderer->isOpen()) {
@@ -413,54 +400,92 @@ void AudioEngine::mixerThreadMain()
             continue;
         }
 
-        const int frameCount = static_cast<int>(std::max<UINT32>(m_renderer->preferredFrameCount(), 512));
-        const int channelCount = m_renderer->channelCount();
-        const size_t bufferSamples = static_cast<size_t>(frameCount * channelCount);
-        if (lastFrameCount != frameCount || lastChannelCount != channelCount) {
-            mixBuffer.assign(bufferSamples, 0.f);
-            sessionScratch.assign(bufferSamples, 0.f);
-            lastFrameCount = frameCount;
-            lastChannelCount = channelCount;
-        } else {
-            std::fill(mixBuffer.begin(), mixBuffer.end(), 0.f);
+        if (!m_renderer->waitForNextPeriod(20)) {
+            continue;
+        }
+        if (m_mixerStopRequested.load()) {
+            break;
         }
 
-        std::vector<AudioRingBuffer *> activeRingBuffers;
+        const UINT32 availableFrames = m_renderer->availableWriteFrames();
+        const UINT32 periodFrames = std::max<UINT32>(1, m_renderer->preferredFrameCount());
+        const int frameCount = static_cast<int>(std::min(availableFrames, periodFrames));
+        if (frameCount <= 0) {
+            continue;
+        }
+
+        const int channelCount = m_renderer->channelCount();
+        const size_t periodSamples = static_cast<size_t>(periodFrames * static_cast<UINT32>(channelCount));
+        if (lastFrameCount != static_cast<int>(periodFrames) || lastChannelCount != channelCount) {
+            mixBuffer.assign(periodSamples, 0.f);
+            sessionScratch.assign(periodSamples, 0.f);
+            mixLimiter.setSampleRate(static_cast<float>(m_renderer->sampleRate()));
+            lastFrameCount = static_cast<int>(periodFrames);
+            lastChannelCount = channelCount;
+        } else {
+            std::fill(mixBuffer.begin(), mixBuffer.begin() + static_cast<ptrdiff_t>(frameCount * channelCount), 0.f);
+        }
+
+        std::vector<std::shared_ptr<SpscRingBuffer>> activeRingBuffers;
         {
             std::lock_guard<std::mutex> lock(m_sessionsMutex);
             activeRingBuffers.reserve(m_sessions.size());
             for (const auto &session : m_sessions) {
                 EqAudioSession *liveSession = session.get();
                 if (liveSession && liveSession->isRunning()) {
-                    activeRingBuffers.push_back(liveSession->ringBuffer());
+                    if (std::shared_ptr<SpscRingBuffer> ring = liveSession->ringBuffer()) {
+                        activeRingBuffers.push_back(std::move(ring));
+                    }
                 }
             }
         }
 
-        for (AudioRingBuffer *ringBuffer : activeRingBuffers) {
+        int mixedSessionCount = 0;
+        for (const std::shared_ptr<SpscRingBuffer> &ringBuffer : activeRingBuffers) {
+            SessionMixState &mixState = sessionMixStates[ringBuffer];
+            if (!mixState.prefilled
+                && ringBuffer->availableFrames() < static_cast<size_t>(AppConstants::kTargetRingFillFrames)) {
+                continue;
+            }
+            mixState.prefilled = true;
+
             std::fill(sessionScratch.begin(), sessionScratch.end(), 0.f);
             ringBuffer->readAdd(sessionScratch.data(), frameCount, channelCount);
-            for (size_t i = 0; i < mixBuffer.size(); ++i) {
-                mixBuffer[i] += sessionScratch[i];
+            for (int i = 0; i < frameCount * channelCount; ++i) {
+                mixBuffer[static_cast<size_t>(i)] += sessionScratch[static_cast<size_t>(i)];
+            }
+            ++mixedSessionCount;
+        }
+
+        for (auto it = sessionMixStates.begin(); it != sessionMixStates.end();) {
+            const bool stillActive =
+                std::find(activeRingBuffers.begin(), activeRingBuffers.end(), it->first) != activeRingBuffers.end();
+            if (!stillActive) {
+                it = sessionMixStates.erase(it);
+            } else {
+                ++it;
             }
         }
 
-        float peak = 0.f;
-        for (float sample : mixBuffer) {
-            peak = std::max(peak, std::fabs(sample));
-        }
-
-        if (peak > 1.f) {
-            for (float &sample : mixBuffer) {
-                sample = sample / (1.f + std::fabs(sample));
+        if (mixedSessionCount > 1) {
+            const float mixScale = 1.f / std::sqrt(static_cast<float>(mixedSessionCount));
+            const int sampleCount = frameCount * channelCount;
+            for (int i = 0; i < sampleCount; ++i) {
+                mixBuffer[static_cast<size_t>(i)] *= mixScale;
             }
         }
+
+        mixLimiter.process(mixBuffer.data(), frameCount, channelCount);
 
         QString writeError;
         if (!m_renderer->write(mixBuffer.data(), frameCount, channelCount, &writeError)) {
             emit errorOccurred(writeError);
             break;
         }
+    }
+
+    if (taskHandle) {
+        AvRevertMmThreadCharacteristics(taskHandle);
     }
 
     if (comInitializedOnThread) {

@@ -91,6 +91,7 @@ private:
                         QString *outputName,
                         QString *errorTitle,
                         QString *errorMessage);
+    QVector<unsigned long> linkedProcessIds(unsigned long processId) const;
 
     AudioEngine *m_engine = nullptr;
     SettingsStore *m_store = nullptr;

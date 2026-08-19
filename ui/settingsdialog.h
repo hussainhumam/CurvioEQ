@@ -29,6 +29,7 @@ private:
     void populateEqOutputDevices();
 
     QCheckBox *m_startWithWindowsCheck = nullptr;
+    QCheckBox *m_muteRoutingSinkCheck = nullptr;
     QComboBox *m_routingSinkCombo = nullptr;
     QComboBox *m_eqOutputCombo = nullptr;
     QVector<AudioRenderDeviceInfo> m_routingSinkDevices;

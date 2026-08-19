@@ -5,6 +5,7 @@
 #include "audio/processloopbackcapture.h"
 #include "ui/appconstants.h"
 #include "ui/audiodeviceresolver.h"
+#include "ui/eqcolorpalette.h"
 
 #include <algorithm>
 
@@ -13,6 +14,7 @@ EqSessionManager::EqSessionManager(AudioEngine *engine, SettingsStore *store, QO
     , m_engine(engine)
     , m_store(store)
     , m_gainDebounceTimer(new QTimer(this))
+    , m_routingWatchdogTimer(new QTimer(this))
 {
     m_gainDebounceTimer->setSingleShot(true);
     m_gainDebounceTimer->setInterval(AppConstants::kGainUpdateDebounceMs);
@@ -22,6 +24,14 @@ EqSessionManager::EqSessionManager(AudioEngine *engine, SettingsStore *store, QO
             m_pendingGainPid = 0;
         }
     });
+
+    m_routingWatchdogTimer->setInterval(2500);
+    connect(m_routingWatchdogTimer, &QTimer::timeout, this, [this]() {
+        if (m_engine && m_engine->isRunning()) {
+            m_engine->maintainActiveSessionRouting();
+        }
+    });
+    m_routingWatchdogTimer->start();
 }
 
 void EqSessionManager::setGainReader(std::function<std::array<float, EqProcessor::kBandCount>()> reader)
@@ -29,10 +39,14 @@ void EqSessionManager::setGainReader(std::function<std::array<float, EqProcessor
     m_gainReader = std::move(reader);
 }
 
-void EqSessionManager::setSurroundStateReader(
-    std::function<std::pair<bool, std::array<int, SurroundProcessor::kChannelCount>>()> reader)
+void EqSessionManager::setSurroundStateReader(std::function<VirtualSurroundSettings()> reader)
 {
     m_surroundStateReader = std::move(reader);
+}
+
+void EqSessionManager::setDynamicsStateReader(std::function<DynamicRangeSettings()> reader)
+{
+    m_dynamicsStateReader = std::move(reader);
 }
 
 void EqSessionManager::setDisplayNameProvider(std::function<QString(unsigned long)> provider)
@@ -126,9 +140,9 @@ EqSessionSnapshot EqSessionManager::snapshotFor(unsigned long processId) const
     return m_snapshots.value(processId);
 }
 
-bool EqSessionManager::enableForProcess(unsigned long processId, const QColor &labelColor)
+bool EqSessionManager::enableForProcess(unsigned long processId)
 {
-    if (!m_engine || processId == 0 || !labelColor.isValid()) {
+    if (!m_engine || processId == 0) {
         return false;
     }
 
@@ -136,14 +150,22 @@ bool EqSessionManager::enableForProcess(unsigned long processId, const QColor &l
         return true;
     }
 
+    const QColor labelColor = allocateLabelColor(processId);
+    if (!labelColor.isValid()) {
+        emit errorOccurred(QStringLiteral("Enable EQ"),
+                           QStringLiteral("All label colors are in use. Disable EQ on another app first."));
+        return false;
+    }
+
     EqSessionSnapshot snapshot = m_snapshots.value(processId);
     if (!snapshot.hasStoredGains && m_gainReader) {
         snapshot.gains = m_gainReader();
     }
     if (m_surroundStateReader) {
-        const auto surroundState = m_surroundStateReader();
-        snapshot.surroundEnabled = surroundState.first;
-        snapshot.surroundChannelLevels = surroundState.second;
+        snapshot.virtualSurround = m_surroundStateReader();
+    }
+    if (m_dynamicsStateReader) {
+        snapshot.dynamicRange = m_dynamicsStateReader();
     }
 
     QString sinkDeviceId;
@@ -166,13 +188,16 @@ bool EqSessionManager::enableForProcess(unsigned long processId, const QColor &l
         return false;
     }
 
+    const bool muteRoutingSink = m_store ? m_store->settings().muteRoutingSink : true;
+
     if (!m_engine->startSession(processId,
                                 snapshot.gains,
-                                snapshot.surroundEnabled,
-                                snapshot.surroundChannelLevels,
+                                snapshot.virtualSurround,
+                                snapshot.dynamicRange,
                                 outputDeviceId,
                                 outputDeviceName,
                                 sinkDeviceId,
+                                muteRoutingSink,
                                 &errorMessage)) {
         emit errorOccurred(QStringLiteral("EQ failed to start"), errorMessage);
         return false;
@@ -189,10 +214,13 @@ bool EqSessionManager::enableForProcess(unsigned long processId, const QColor &l
     m_snapshots.insert(processId, snapshot);
 
     const QString appName = m_displayNameProvider ? m_displayNameProvider(processId) : QString();
-    emit logMessage(QStringLiteral("INFO"),
-                    QStringLiteral("EQ active for %1 (PID %2)")
-                        .arg(appName.isEmpty() ? QStringLiteral("app") : appName)
-                        .arg(processId));
+    QString logLine = QStringLiteral("EQ active for %1 (PID %2)")
+                          .arg(appName.isEmpty() ? QStringLiteral("app") : appName)
+                          .arg(processId);
+    if (muteRoutingSink) {
+        logLine += QStringLiteral("; original audio muted on routing sink");
+    }
+    emit logMessage(QStringLiteral("INFO"), logLine);
     emit eqStateChanged();
     emit controlStateChanged();
     return true;
@@ -210,7 +238,10 @@ void EqSessionManager::disableForProcess(unsigned long processId)
     }
 
     if (m_gainReader) {
-        saveDraftForProcess(processId, m_gainReader(), m_surroundStateReader ? m_surroundStateReader() : std::make_pair(false, std::array<int, SurroundProcessor::kChannelCount>{}));
+        saveDraftForProcess(processId,
+                            m_gainReader(),
+                            m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{},
+                            m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{});
     }
 
     m_engine->stopSession(processId);
@@ -257,12 +288,13 @@ bool EqSessionManager::restoreForProcess(unsigned long processId)
         return false;
     }
 
-    return enableForProcess(processId, snapshot.labelColor);
+    return enableForProcess(processId);
 }
 
 void EqSessionManager::saveDraftForProcess(unsigned long processId,
                                            const std::array<float, EqProcessor::kBandCount> &gains,
-                                           const std::pair<bool, std::array<int, SurroundProcessor::kChannelCount>> &surround)
+                                           const VirtualSurroundSettings &virtualSurround,
+                                           const DynamicRangeSettings &dynamicRange)
 {
     if (processId == 0) {
         return;
@@ -271,31 +303,34 @@ void EqSessionManager::saveDraftForProcess(unsigned long processId,
     EqSessionSnapshot snapshot = m_snapshots.value(processId);
     snapshot.processId = processId;
     snapshot.gains = gains;
-    snapshot.surroundEnabled = surround.first;
-    snapshot.surroundChannelLevels = surround.second;
+    snapshot.virtualSurround = virtualSurround;
+    snapshot.dynamicRange = dynamicRange;
     snapshot.hasStoredGains = true;
     m_snapshots.insert(processId, snapshot);
 
     if (snapshot.active) {
         m_engine->setSessionGains(processId, gains);
-        m_engine->setSessionSurroundEnabled(processId, surround.first);
-        m_engine->setSessionSurroundChannelLevels(processId, surround.second);
+        m_engine->setSessionVirtualSurround(processId, virtualSurround);
+        m_engine->setSessionDynamicRange(processId, dynamicRange);
     }
 }
 
 void EqSessionManager::applySnapshotToUi(unsigned long processId,
-                                         const std::function<void(const std::array<float, EqProcessor::kBandCount> &)> &applyGains,
-                                         const std::function<void(bool, const std::array<int, SurroundProcessor::kChannelCount> &)> &applySurround) const
+                                           const std::function<void(const std::array<float, EqProcessor::kBandCount> &)> &applyGains,
+                                           const std::function<void(const VirtualSurroundSettings &)> &applySurround,
+                                           const std::function<void(const DynamicRangeSettings &)> &applyDynamics) const
 {
     const EqSessionSnapshot snapshot = m_snapshots.value(processId);
     if (snapshot.hasStoredGains || snapshot.active) {
         applyGains(snapshot.gains);
-        applySurround(snapshot.surroundEnabled, snapshot.surroundChannelLevels);
+        applySurround(snapshot.virtualSurround);
+        applyDynamics(snapshot.dynamicRange);
         return;
     }
 
     applyGains({});
-    applySurround(false, {50, 50, 50, 50, 50, 50, 50, 50});
+    applySurround(VirtualSurroundSettings{});
+    applyDynamics(DynamicRangeSettings{});
 }
 
 void EqSessionManager::pushLiveGainsForProcess(unsigned long processId)
@@ -309,11 +344,12 @@ void EqSessionManager::pushLiveGainsForProcess(unsigned long processId)
     }
 
     const auto gains = m_gainReader();
-    const auto surround = m_surroundStateReader
-                              ? m_surroundStateReader()
-                              : std::make_pair(false, std::array<int, SurroundProcessor::kChannelCount>{});
+    const VirtualSurroundSettings virtualSurround =
+        m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{};
+    const DynamicRangeSettings dynamicRange =
+        m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{};
     for (unsigned long pid : linkedProcessIds(processId)) {
-        saveDraftForProcess(pid, gains, surround);
+        saveDraftForProcess(pid, gains, virtualSurround, dynamicRange);
     }
 }
 
@@ -336,9 +372,29 @@ void EqSessionManager::pushLiveSurroundForProcess(unsigned long processId)
     }
 
     const auto gains = m_gainReader();
-    const auto surround = m_surroundStateReader();
+    const VirtualSurroundSettings virtualSurround = m_surroundStateReader();
+    const DynamicRangeSettings dynamicRange =
+        m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{};
     for (unsigned long pid : linkedProcessIds(processId)) {
-        saveDraftForProcess(pid, gains, surround);
+        saveDraftForProcess(pid, gains, virtualSurround, dynamicRange);
+    }
+}
+
+void EqSessionManager::pushLiveDynamicsForProcess(unsigned long processId)
+{
+    if (!m_dynamicsStateReader || processId == 0) {
+        return;
+    }
+    if (!m_gainReader) {
+        return;
+    }
+
+    const auto gains = m_gainReader();
+    const VirtualSurroundSettings virtualSurround =
+        m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{};
+    const DynamicRangeSettings dynamicRange = m_dynamicsStateReader();
+    for (unsigned long pid : linkedProcessIds(processId)) {
+        saveDraftForProcess(pid, gains, virtualSurround, dynamicRange);
     }
 }
 
@@ -375,6 +431,35 @@ void EqSessionManager::onSessionStopped(unsigned long processId)
     emit controlStateChanged();
 }
 
+QColor EqSessionManager::allocateLabelColor(unsigned long processId) const
+{
+    auto colorInUse = [this](const QColor &color) {
+        if (!color.isValid()) {
+            return false;
+        }
+        for (auto it = m_snapshots.constBegin(); it != m_snapshots.constEnd(); ++it) {
+            if (it.value().active && it.value().labelColor == color) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const EqSessionSnapshot snapshot = m_snapshots.value(processId);
+    if (snapshot.labelColor.isValid() && !colorInUse(snapshot.labelColor)) {
+        return snapshot.labelColor;
+    }
+
+    for (int i = 0; i < EqColorPalette::kPresetColorCount; ++i) {
+        const QColor color = EqColorPalette::presetColorAt(i);
+        if (!colorInUse(color)) {
+            return color;
+        }
+    }
+
+    return QColor();
+}
+
 bool EqSessionManager::resolveDevices(QString *sinkId,
                                       QString *sinkName,
                                       QString *outputId,
@@ -387,16 +472,6 @@ bool EqSessionManager::resolveDevices(QString *sinkId,
     }
 
     const AppSettings settings = m_store->settings();
-    const ResolvedDevice sink = AudioDeviceResolver::resolveRoutingSink(settings);
-    if (!sink.ok) {
-        if (errorTitle) {
-            *errorTitle = QStringLiteral("Routing sink");
-        }
-        if (errorMessage) {
-            *errorMessage = QStringLiteral("Choose a routing sink in Settings before enabling EQ.");
-        }
-        return false;
-    }
 
     const ResolvedDevice output = AudioDeviceResolver::resolveEqOutput(settings);
     if (!output.ok) {
@@ -405,6 +480,17 @@ bool EqSessionManager::resolveDevices(QString *sinkId,
         }
         if (errorMessage) {
             *errorMessage = QStringLiteral("Choose an EQ output device in Settings.");
+        }
+        return false;
+    }
+
+    const ResolvedDevice sink = AudioDeviceResolver::resolveRoutingSink(settings);
+    if (!sink.ok) {
+        if (errorTitle) {
+            *errorTitle = QStringLiteral("Routing sink");
+        }
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Choose a routing sink in Settings (for example VB-Cable).");
         }
         return false;
     }

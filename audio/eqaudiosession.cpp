@@ -11,7 +11,6 @@
 #include <windows.h>
 
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -23,6 +22,8 @@ void ensureVectorCapacity(std::vector<float> *output, size_t sampleCount)
         output->resize(sampleCount);
     }
 }
+
+constexpr int kFrameChunk = 512;
 
 void upmixChannels(const float *input,
                    int frameCount,
@@ -82,6 +83,14 @@ bool EqAudioSession::start(SessionStartConfig config, QString *errorMessage)
         return false;
     }
 
+    if (config.sinkDeviceId.isEmpty()) {
+        const QString message = QStringLiteral("No routing sink device configured");
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    }
+
     m_processId = config.processId;
     m_mixSampleRate = config.mixSampleRate;
     m_mixChannelCount = std::max(1, config.mixChannelCount);
@@ -91,25 +100,63 @@ bool EqAudioSession::start(SessionStartConfig config, QString *errorMessage)
     m_routingApplied = false;
 
     m_eqProcessor.setGains(config.gainsDb);
-    m_surroundProcessor.setEnabled(config.surroundEnabled);
-    m_surroundProcessor.setChannelLevels(config.surroundLevels);
+    m_virtualSurroundProcessor.setEnabled(config.virtualSurround.enabled);
+    m_virtualSurroundProcessor.setPreset(config.virtualSurround.presetId);
+    m_virtualSurroundProcessor.setStrength(config.virtualSurround.strength);
+    m_virtualSurroundProcessor.setChannelLevels(config.virtualSurround.channelLevels);
+    m_virtualSurroundProcessor.setSampleRate(config.mixSampleRate);
+    m_dynamicsProcessor.setEnabled(config.dynamicRange.enabled);
+    m_dynamicsProcessor.setAmount(config.dynamicRange.amount);
+    m_dynamicsProcessor.setSampleRate(config.mixSampleRate);
+    m_loudnessProcessor.setEnabled(config.dynamicRange.enabled);
+    m_loudnessProcessor.setAmount(config.dynamicRange.loudnessAmount);
+    m_loudnessProcessor.setSampleRate(config.mixSampleRate);
     m_ringBuffer->configure(m_mixChannelCount, AppConstants::kSessionRingBufferFrames);
     m_clockSync.configure(AppConstants::kSessionRingBufferFrames,
                           AppConstants::kTargetRingFillFrames,
                           AppConstants::kHighRingFillFrames);
 
-    if (!config.sinkDeviceId.isEmpty()) {
-        QString routeError;
-        if (!AudioPolicyRouter::routeProcessToDevice(config.processId, config.sinkDeviceId, &routeError)) {
-            const QString message = QStringLiteral("Could not route app audio to sink: %1").arg(routeError);
-            if (errorMessage) {
-                *errorMessage = message;
-            }
-            m_processId = 0;
-            return false;
+    m_sinkDeviceId = config.sinkDeviceId;
+    QString routeError;
+    if (!AudioPolicyRouter::routeProcessTreeToDevice(config.processId,
+                                                     config.sinkDeviceId,
+                                                     &m_routedProcessCount,
+                                                     &routeError)) {
+        const QString message = QStringLiteral("Could not route app audio to sink: %1").arg(routeError);
+        if (errorMessage) {
+            *errorMessage = message;
         }
-        m_routingApplied = true;
+        m_processId = 0;
+        m_sinkDeviceId.clear();
+        m_routedProcessCount = 0;
+        return false;
     }
+
+    if (!AudioPolicyRouter::verifyProcessTreeRouted(config.processId, config.sinkDeviceId)) {
+        AudioPolicyRouter::routeProcessTreeToDevice(config.processId,
+                                                    config.sinkDeviceId,
+                                                    &m_routedProcessCount,
+                                                    &routeError);
+    }
+
+    if (AudioPolicyRouter::persistedRenderDeviceId(config.processId) != config.sinkDeviceId) {
+        const QString message =
+            QStringLiteral("App audio routing did not stick. Close and reopen the app, then try EQ again.");
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        AudioPolicyRouter::clearProcessTreeRouting(config.processId);
+        m_processId = 0;
+        m_sinkDeviceId.clear();
+        m_routedProcessCount = 0;
+        return false;
+    }
+
+    AudioLog::info(QStringLiteral("EqAudioSession"),
+                   QStringLiteral("Routed %1 process(es) to sink for pid=%2")
+                       .arg(m_routedProcessCount)
+                       .arg(config.processId));
+    m_routingApplied = true;
 
     m_stopRequested.store(false);
     m_running.store(true);
@@ -119,22 +166,56 @@ bool EqAudioSession::start(SessionStartConfig config, QString *errorMessage)
 
 void EqAudioSession::clearRoutingIfApplied()
 {
-    if (!m_routingApplied || m_processId == 0) {
+    if (m_processId == 0) {
+        return;
+    }
+
+    if (!m_routingApplied) {
+        m_sinkDeviceId.clear();
+        m_routedProcessCount = 0;
         return;
     }
 
     QString clearError;
-    AudioPolicyRouter::clearProcessRouting(m_processId, &clearError);
+    AudioPolicyRouter::clearProcessTreeRouting(m_processId, &clearError);
     m_routingApplied = false;
+    m_sinkDeviceId.clear();
+    m_routedProcessCount = 0;
 }
 
-void EqAudioSession::finishThread(unsigned long processId)
+void EqAudioSession::maintainRouting()
+{
+    if (m_processId == 0 || !m_routingApplied || m_sinkDeviceId.isEmpty()) {
+        return;
+    }
+
+    if (AudioPolicyRouter::verifyProcessTreeRouted(m_processId, m_sinkDeviceId)) {
+        return;
+    }
+
+    int reroutedCount = 0;
+    QString routeError;
+    if (AudioPolicyRouter::routeProcessTreeToDevice(m_processId, m_sinkDeviceId, &reroutedCount, &routeError)) {
+        m_routedProcessCount = reroutedCount;
+        AudioLog::warn(QStringLiteral("EqAudioSession"),
+                       QStringLiteral("Re-applied sink routing for pid=%1 (%2 process(es))")
+                           .arg(m_processId)
+                           .arg(reroutedCount));
+    } else if (!routeError.isEmpty()) {
+        AudioLog::warn(QStringLiteral("EqAudioSession"),
+                       QStringLiteral("Failed to re-apply sink routing for pid=%1: %2")
+                           .arg(m_processId)
+                           .arg(routeError));
+    }
+}
+
+void EqAudioSession::finishThread(unsigned long processId, const QString &errorMessage)
 {
     clearRoutingIfApplied();
     m_running.store(false);
 
     if (m_onThreadFinished) {
-        m_onThreadFinished(processId);
+        m_onThreadFinished(processId, errorMessage);
     }
 }
 
@@ -164,14 +245,20 @@ void EqAudioSession::setGains(const std::array<float, EqProcessor::kBandCount> &
     m_eqProcessor.setGains(gainsDb);
 }
 
-void EqAudioSession::setSurroundEnabled(bool enabled)
+void EqAudioSession::setVirtualSurroundSettings(const VirtualSurroundSettings &settings)
 {
-    m_surroundProcessor.setEnabled(enabled);
+    m_virtualSurroundProcessor.setEnabled(settings.enabled);
+    m_virtualSurroundProcessor.setPreset(settings.presetId);
+    m_virtualSurroundProcessor.setStrength(settings.strength);
+    m_virtualSurroundProcessor.setChannelLevels(settings.channelLevels);
 }
 
-void EqAudioSession::setSurroundChannelLevels(const std::array<int, SurroundProcessor::kChannelCount> &levels)
+void EqAudioSession::setDynamicRangeSettings(const DynamicRangeSettings &settings)
 {
-    m_surroundProcessor.setChannelLevels(levels);
+    m_dynamicsProcessor.setEnabled(settings.enabled);
+    m_dynamicsProcessor.setAmount(settings.amount);
+    m_loudnessProcessor.setEnabled(settings.enabled);
+    m_loudnessProcessor.setAmount(settings.loudnessAmount);
 }
 
 void EqAudioSession::processCaptureChunk(CaptureBuffers *buffers, int framesRead)
@@ -181,6 +268,7 @@ void EqAudioSession::processCaptureChunk(CaptureBuffers *buffers, int framesRead
     }
 
     const int channelCount = buffers->captureChannelCount;
+
     const bool feedSpectrumThisChunk =
         buffers->feedSpectrum && m_spectrumProcessId && m_spectrumProcessId->load() == m_processId;
 
@@ -192,21 +280,29 @@ void EqAudioSession::processCaptureChunk(CaptureBuffers *buffers, int framesRead
 
     m_pipeline.process(buffers->capture.data(), framesRead, channelCount);
 
-    if (feedSpectrumThisChunk) {
-        m_spectrumCapture->pushBeforeAndAfter(buffers->eqInput.data(),
-                                              buffers->capture.data(),
-                                              framesRead,
-                                              channelCount);
-    }
-
-    const float *writeBuffer = buffers->capture.data();
+    float *writeBuffer = buffers->capture.data();
     int writeChannelCount = channelCount;
     int framesToWrite = framesRead;
 
-    if (m_surroundProcessor.isEnabled()) {
-        m_surroundProcessor.process(buffers->capture.data(), buffers->surround.data(), framesRead);
-        writeBuffer = buffers->surround.data();
-        writeChannelCount = SurroundProcessor::kChannelCount;
+    if (m_virtualSurroundProcessor.isEnabled()) {
+        m_virtualSurroundProcessor.process(buffers->capture.data(), buffers->virtualSurround.data(), framesRead);
+        writeBuffer = buffers->virtualSurround.data();
+        writeChannelCount = 2;
+    }
+
+    if (m_dynamicsProcessor.isEnabled()) {
+        m_dynamicsProcessor.process(writeBuffer, framesRead, writeChannelCount);
+    }
+
+    if (m_loudnessProcessor.isEnabled()) {
+        m_loudnessProcessor.process(writeBuffer, framesRead, writeChannelCount);
+    }
+
+    if (feedSpectrumThisChunk) {
+        m_spectrumCapture->pushBeforeAndAfter(buffers->eqInput.data(),
+                                              writeBuffer,
+                                              framesRead,
+                                              writeChannelCount);
     }
 
     if (buffers->needsResample && writeChannelCount != buffers->lastResamplerChannels) {
@@ -253,7 +349,7 @@ void EqAudioSession::threadMain()
     if (!capture.open(m_processId, m_mixSampleRate, &errorMessage)) {
         AudioLog::error(tag, errorMessage);
         capture.close();
-        finishThread(processId);
+        finishThread(processId, errorMessage);
         if (comInitializedOnThread) {
             CoUninitialize();
         }
@@ -267,20 +363,20 @@ void EqAudioSession::threadMain()
     buffers.lastResamplerChannels = buffers.captureChannelCount;
 
     m_pipeline.setSampleRate(buffers.captureRate);
+    m_virtualSurroundProcessor.setSampleRate(buffers.captureRate);
+    m_dynamicsProcessor.setSampleRate(buffers.captureRate);
+    m_loudnessProcessor.setSampleRate(buffers.captureRate);
     m_resampler.configure(buffers.captureRate, m_mixSampleRate, buffers.captureChannelCount);
 
-    constexpr int kFrameChunk = 512;
+    const int maxPipelineChannels = std::max(buffers.captureChannelCount, m_mixChannelCount);
     buffers.capture.assign(static_cast<size_t>(kFrameChunk * buffers.captureChannelCount), 0.f);
     if (m_spectrumCapture && m_spectrumProcessId) {
         buffers.eqInput.assign(static_cast<size_t>(kFrameChunk * buffers.captureChannelCount), 0.f);
     }
-    buffers.surround.assign(static_cast<size_t>(kFrameChunk * SurroundProcessor::kChannelCount), 0.f);
+    buffers.virtualSurround.assign(static_cast<size_t>(kFrameChunk * 2), 0.f);
 
     buffers.maxResampleOutputFrames =
         buffers.needsResample ? m_resampler.estimateOutputFrames(kFrameChunk) + 1 : kFrameChunk;
-    const int maxPipelineChannels = std::max({buffers.captureChannelCount,
-                                              SurroundProcessor::kChannelCount,
-                                              m_mixChannelCount});
     buffers.resampled.assign(static_cast<size_t>(buffers.maxResampleOutputFrames * maxPipelineChannels), 0.f);
     buffers.mixFormat.assign(static_cast<size_t>(buffers.maxResampleOutputFrames * m_mixChannelCount), 0.f);
 
@@ -316,7 +412,7 @@ void EqAudioSession::threadMain()
     }
 
     capture.close();
-    finishThread(processId);
+    finishThread(processId, errorMessage);
 
     if (comInitializedOnThread) {
         CoUninitialize();

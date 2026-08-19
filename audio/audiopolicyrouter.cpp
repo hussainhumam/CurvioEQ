@@ -1,6 +1,7 @@
 #include "audiopolicyrouter.h"
 
 #include "log.h"
+#include "processtreeutil.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -455,6 +456,32 @@ bool AudioPolicyRouter::routeProcessToDevice(unsigned long processId,
     return true;
 }
 
+bool AudioPolicyRouter::routeProcessTreeToDevice(unsigned long rootProcessId,
+                                                 const QString &deviceId,
+                                                 int *routedCount,
+                                                 QString *errorMessage)
+{
+    const QVector<unsigned long> processIds = ProcessTreeUtil::enumerateProcessTree(rootProcessId);
+    int routed = 0;
+    for (unsigned long processId : processIds) {
+        if (routeProcessToDevice(processId, deviceId, errorMessage)) {
+            ++routed;
+        }
+    }
+
+    if (routedCount) {
+        *routedCount = routed;
+    }
+
+    if (routed == 0) {
+        if (errorMessage && errorMessage->isEmpty()) {
+            *errorMessage = QStringLiteral("Failed to route any process in tree");
+        }
+        return false;
+    }
+    return true;
+}
+
 bool AudioPolicyRouter::clearProcessRouting(unsigned long processId, QString *errorMessage)
 {
     if (!ensurePolicyFactory()) {
@@ -468,6 +495,41 @@ bool AudioPolicyRouter::clearProcessRouting(unsigned long processId, QString *er
                                 .arg(AudioLog::hresultToString(hr));
         }
         return false;
+    }
+    return true;
+}
+
+bool AudioPolicyRouter::clearProcessTreeRouting(unsigned long rootProcessId, QString *errorMessage)
+{
+    const QVector<unsigned long> processIds = ProcessTreeUtil::enumerateProcessTree(rootProcessId);
+    bool ok = true;
+    for (unsigned long processId : processIds) {
+        if (!clearProcessRouting(processId, errorMessage)) {
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+bool AudioPolicyRouter::verifyProcessTreeRouted(unsigned long rootProcessId, const QString &deviceId)
+{
+    if (deviceId.isEmpty()) {
+        return false;
+    }
+
+    if (persistedRenderDeviceId(rootProcessId) != deviceId) {
+        return false;
+    }
+
+    const QVector<unsigned long> processIds = ProcessTreeUtil::enumerateProcessTree(rootProcessId);
+    for (unsigned long processId : processIds) {
+        if (processId == rootProcessId) {
+            continue;
+        }
+        const QString persisted = persistedRenderDeviceId(processId);
+        if (!persisted.isEmpty() && persisted != deviceId) {
+            return false;
+        }
     }
     return true;
 }

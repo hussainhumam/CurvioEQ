@@ -58,6 +58,8 @@ SessionListController::SessionListController(QListView *listView,
 
     m_listView->setSelectionMode(QAbstractItemView::SingleSelection);
 
+    m_listView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
     m_listView->setAlternatingRowColors(false);
 
     m_listView->setSpacing(2);
@@ -148,6 +150,8 @@ void SessionListController::refresh()
     for (const AudioSessionInfo &session : uniqueApps) {
 
         auto *item = new QStandardItem(session.displayName);
+
+        item->setEditable(false);
 
         item->setData(static_cast<qulonglong>(session.processId), AppSessionDelegate::RoleProcessId);
 
@@ -396,7 +400,27 @@ void SessionListController::showContextMenu(const QPoint &position)
 
     QMenu menu(m_listView);
 
+    const bool eqActive = m_eqSessions.contains(processId);
+    if (eqActive) {
+        QAction *disableEqAction = menu.addAction(QStringLiteral("Disable EQ"));
+        connect(disableEqAction, &QAction::triggered, this, [this, processId]() {
+            emit disableEqRequested(processId);
+        });
+    } else {
+        QAction *enableEqAction = menu.addAction(QStringLiteral("Enable EQ"));
+        connect(enableEqAction, &QAction::triggered, this, [this, processId]() {
+            emit enableEqRequested(processId);
+        });
+    }
 
+    menu.addSeparator();
+
+    QAction *soundModsAction = menu.addAction(QStringLiteral("Manage sound files…"));
+    connect(soundModsAction, &QAction::triggered, this, [this, processId]() {
+        emit soundModsRequested(processId);
+    });
+
+    menu.addSeparator();
 
     if (!AudioPolicyRouter::isRoutingSupported()) {
 
@@ -419,6 +443,12 @@ void SessionListController::showContextMenu(const QPoint &position)
 
 
     QMenu *outputMenu = menu.addMenu(QStringLiteral("Output device"));
+    if (eqActive) {
+        outputMenu->setToolTipsVisible(true);
+        outputMenu->setToolTip(
+            QStringLiteral("Output is managed by EQ routing while EQ is active. Disable EQ to change it."));
+        outputMenu->setEnabled(false);
+    }
 
     const QVector<AudioRenderDeviceInfo> devices = AudioPolicyRouter::listRenderDevices();
 
@@ -443,12 +473,10 @@ void SessionListController::showContextMenu(const QPoint &position)
 
 
         auto *action = outputMenu->addAction(label);
-
         action->setCheckable(true);
-
         action->setActionGroup(actionGroup);
-
         action->setData(device.id);
+        action->setEnabled(!eqActive);
 
 
 
@@ -489,6 +517,11 @@ void SessionListController::showContextMenu(const QPoint &position)
     menu.addSeparator();
 
     QAction *resetAction = menu.addAction(QStringLiteral("Use Windows default"));
+    resetAction->setEnabled(!eqActive);
+    if (eqActive) {
+        resetAction->setToolTip(
+            QStringLiteral("Output is managed by EQ routing while EQ is active. Disable EQ to restore default."));
+    }
 
     connect(resetAction, &QAction::triggered, this, [this, processId, appName]() {
 

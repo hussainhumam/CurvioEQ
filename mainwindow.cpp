@@ -3,6 +3,8 @@
 #include "ui_mainwindow.h"
 
 #include "audio/dspstatus.h"
+#include "audio/hrtfpresets.h"
+#include "audio/loudnessprocessor.h"
 #include "audio/log.h"
 #include "audio/audioendpointvolume.h"
 #include "audio/audiosessionvolume.h"
@@ -15,8 +17,10 @@
 #include "ui/presetpanelcontroller.h"
 #include "ui/sessionlistcontroller.h"
 #include "ui/settingsdialog.h"
+#include "ui/setupdialog.h"
 #include "ui/singleinstanceserver.h"
 #include "ui/spectrumwidget.h"
+#include "ui/soundmoddialog.h"
 #include "ui/traycontroller.h"
 
 #include <QApplication>
@@ -30,6 +34,47 @@
 #include <QScrollBar>
 #include <QShowEvent>
 #include <QVBoxLayout>
+
+#include <cmath>
+
+namespace {
+
+QString dynamicsModeLabelForAmount(int amount)
+{
+    if (amount <= DynamicRangeSettings::kAmountMin + 10) {
+        return QStringLiteral("Ultra Open");
+    }
+    if (amount < 0) {
+        return QStringLiteral("Extra Open");
+    }
+    if (amount <= 20) {
+        return QStringLiteral("Open");
+    }
+    if (amount <= 45) {
+        return QStringLiteral("Natural");
+    }
+    if (amount <= 70) {
+        return QStringLiteral("Controlled");
+    }
+    if (amount <= 100) {
+        return QStringLiteral("Tight");
+    }
+    if (amount < DynamicRangeSettings::kAmountMax - 10) {
+        return QStringLiteral("Extra Tight");
+    }
+    return QStringLiteral("Ultra Tight");
+}
+
+QString loudnessTargetLabelForAmount(int amount)
+{
+    if (amount <= DynamicRangeSettings::kLoudnessMin) {
+        return QStringLiteral("Off");
+    }
+    const float targetLufs = LoudnessProcessor::targetLoudnessDbForAmount(amount);
+    return QStringLiteral("%1 LUFS").arg(static_cast<int>(std::lround(targetLufs)));
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -49,6 +94,7 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     setupSurroundUi();
+    setupDynamicsUi();
     setupEqControls();
     restructureLayout();
 
@@ -172,11 +218,39 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_sessionList, &SessionListController::logMessage, this, &MainWindow::appendLog);
     connect(m_sessionList, &SessionListController::errorOccurred, this, &MainWindow::showCopyableError);
+    connect(m_sessionList, &SessionListController::enableEqRequested, this, [this](unsigned long pid) {
+        if (!m_eqSessionManager) {
+            return;
+        }
+        if (m_eqSessionManager->enableForProcess(pid)) {
+            m_sliderEditPid = pid;
+            refreshSessionList();
+            updateSpectrumForSelection();
+            updateEqControlState();
+        }
+    });
+    connect(m_sessionList, &SessionListController::disableEqRequested, this, [this](unsigned long pid) {
+        if (!m_eqSessionManager) {
+            return;
+        }
+        m_eqSessionManager->disableForProcess(pid);
+        syncSlidersToSelection();
+        refreshSessionList();
+        updateSpectrumForSelection();
+        updateEqControlState();
+    });
+    connect(m_sessionList, &SessionListController::soundModsRequested, this, [this](unsigned long pid) {
+        const QString displayName = m_sessionList ? m_sessionList->displayNameForPid(pid) : QStringLiteral("App");
+        auto *dialog = new SoundModDialog(pid, displayName, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->open();
+    });
     connect(ui->refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshClicked);
 
     m_eqSessionManager = new EqSessionManager(&m_audioEngine, &m_settingsStore, this);
     m_eqSessionManager->setGainReader([this]() { return readSliderGains(); });
-    m_eqSessionManager->setSurroundStateReader([this]() { return readSurroundState(); });
+    m_eqSessionManager->setSurroundStateReader([this]() { return readVirtualSurroundState(); });
+    m_eqSessionManager->setDynamicsStateReader([this]() { return readDynamicRangeState(); });
     m_eqSessionManager->setDisplayNameProvider([this](unsigned long pid) {
         return m_sessionList ? m_sessionList->displayNameForPid(pid) : QString();
     });
@@ -214,7 +288,7 @@ MainWindow::MainWindow(QWidget *parent)
         if (pid == 0) {
             return;
         }
-        m_eqSessionManager->saveDraftForProcess(pid, gains, readSurroundState());
+        m_eqSessionManager->saveDraftForProcess(pid, gains, readVirtualSurroundState(), readDynamicRangeState());
     });
     connect(m_presetPanel, &PresetPanelController::logMessage, this, &MainWindow::appendLog);
     connect(m_presetPanel, &PresetPanelController::errorOccurred, this, &MainWindow::showCopyableError);
@@ -228,12 +302,34 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_disableAllButton, &QPushButton::clicked, this, &MainWindow::onDisableAllEq);
     connect(ui->resetBandsButton, &QPushButton::clicked, this, &MainWindow::onResetClicked);
     connect(m_resetSurroundButton, &QPushButton::clicked, this, &MainWindow::onResetSurroundClicked);
+    connect(m_resetDynamicsButton, &QPushButton::clicked, this, &MainWindow::onResetDynamicsClicked);
     connect(m_applySurroundButton, &QPushButton::clicked, this, &MainWindow::onApplySurroundClicked);
     connect(m_surroundEnableCheckBox, &QCheckBox::toggled, this, [this](bool) {
         updateSurroundControlsEnabled();
         applySurroundToEngine();
         saveSurroundSettings();
     });
+    if (m_hrtfPresetCombo) {
+        connect(m_hrtfPresetCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+            if (m_loadingSliders || !m_eqSessionManager) {
+                return;
+            }
+            applySurroundToEngine();
+            saveSurroundSettings();
+        });
+    }
+    if (m_hrtfStrengthSlider) {
+        connect(m_hrtfStrengthSlider, &QSlider::valueChanged, this, [this](int value) {
+            if (m_hrtfStrengthValueLabel) {
+                m_hrtfStrengthValueLabel->setText(QStringLiteral("%1%").arg(value));
+            }
+            if (m_loadingSliders || !m_eqSessionManager) {
+                return;
+            }
+            applySurroundToEngine();
+            saveSurroundSettings();
+        });
+    }
     for (QSpinBox *spin : m_surroundSpins) {
         if (spin) {
             connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
@@ -244,6 +340,37 @@ MainWindow::MainWindow(QWidget *parent)
                 saveSurroundSettings();
             });
         }
+    }
+    if (m_dynamicsEnableCheckBox) {
+        connect(m_dynamicsEnableCheckBox, &QCheckBox::toggled, this, [this](bool) {
+            updateDynamicsControlsEnabled();
+            applyDynamicRangeToEngine();
+            saveDynamicRangeSettings();
+        });
+    }
+    if (m_dynamicsAmountSlider) {
+        connect(m_dynamicsAmountSlider, &QSlider::valueChanged, this, [this](int value) {
+            if (m_dynamicsModeLabel) {
+                m_dynamicsModeLabel->setText(dynamicsModeLabelForAmount(value));
+            }
+            if (m_loadingSliders || !m_eqSessionManager) {
+                return;
+            }
+            applyDynamicRangeToEngine();
+            saveDynamicRangeSettings();
+        });
+    }
+    if (m_loudnessAmountSlider) {
+        connect(m_loudnessAmountSlider, &QSlider::valueChanged, this, [this](int value) {
+            if (m_loudnessTargetLabel) {
+                m_loudnessTargetLabel->setText(loudnessTargetLabelForAmount(value));
+            }
+            if (m_loadingSliders || !m_eqSessionManager) {
+                return;
+            }
+            applyDynamicRangeToEngine();
+            saveDynamicRangeSettings();
+        });
     }
     connect(ui->actionSettings, &QAction::triggered, this, &MainWindow::onSettingsClicked);
     connect(ui->actionKeybinds, &QAction::triggered, this, &MainWindow::onKeybindsClicked);
@@ -257,6 +384,14 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_settingsStore.load();
     applySettings(m_settingsStore.settings());
+
+    if (!m_settingsStore.settings().setupCompleted) {
+        SetupDialog setupDialog(m_settingsStore.settings(), this);
+        if (setupDialog.exec() == QDialog::Accepted) {
+            applySettings(setupDialog.resultSettings());
+        }
+    }
+
     applyKeybindSettings();
 
     connect(&m_audioEngine, &AudioEngine::statusChanged, this, &MainWindow::onEngineStatusChanged);
@@ -323,12 +458,12 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 void MainWindow::setupSurroundUi()
 {
-    m_surroundGroup = new QGroupBox(QStringLiteral("7.1 Surround"), this);
+    m_surroundGroup = new QGroupBox(QStringLiteral("Virtual Surround (Headphones)"), this);
     m_surroundGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     auto *groupLayout = new QVBoxLayout(m_surroundGroup);
 
     auto *headerRow = new QHBoxLayout();
-    m_surroundEnableCheckBox = new QCheckBox(QStringLiteral("Enable 7.1"), m_surroundGroup);
+    m_surroundEnableCheckBox = new QCheckBox(QStringLiteral("Enable virtual surround"), m_surroundGroup);
     m_resetSurroundButton = new QPushButton(QStringLiteral("Reset"), m_surroundGroup);
     m_applySurroundButton = new QPushButton(QStringLiteral("Apply"), m_surroundGroup);
     headerRow->addWidget(m_surroundEnableCheckBox);
@@ -336,6 +471,31 @@ void MainWindow::setupSurroundUi()
     headerRow->addWidget(m_applySurroundButton);
     headerRow->addStretch();
     groupLayout->addLayout(headerRow);
+
+    auto *helper = new QLabel(QStringLiteral("Stereo apps are upmixed and rendered with HRTF for headphones."),
+                              m_surroundGroup);
+    helper->setWordWrap(true);
+    groupLayout->addWidget(helper);
+
+    auto *presetRow = new QHBoxLayout();
+    presetRow->addWidget(new QLabel(QStringLiteral("Preset"), m_surroundGroup));
+    m_hrtfPresetCombo = new QComboBox(m_surroundGroup);
+    m_hrtfPresetCombo->addItem(QStringLiteral("Default"), static_cast<int>(HrtfPresetId::Default));
+    m_hrtfPresetCombo->addItem(QStringLiteral("Wide"), static_cast<int>(HrtfPresetId::Wide));
+    m_hrtfPresetCombo->addItem(QStringLiteral("Close"), static_cast<int>(HrtfPresetId::Close));
+    presetRow->addWidget(m_hrtfPresetCombo, 1);
+    groupLayout->addLayout(presetRow);
+
+    auto *strengthRow = new QHBoxLayout();
+    strengthRow->addWidget(new QLabel(QStringLiteral("Strength"), m_surroundGroup));
+    m_hrtfStrengthSlider = new QSlider(Qt::Horizontal, m_surroundGroup);
+    m_hrtfStrengthSlider->setRange(0, 100);
+    m_hrtfStrengthSlider->setValue(75);
+    m_hrtfStrengthValueLabel = new QLabel(QStringLiteral("75%"), m_surroundGroup);
+    m_hrtfStrengthValueLabel->setMinimumWidth(40);
+    strengthRow->addWidget(m_hrtfStrengthSlider, 1);
+    strengthRow->addWidget(m_hrtfStrengthValueLabel);
+    groupLayout->addLayout(strengthRow);
 
     struct SpeakerCell {
         SurroundProcessor::Channel channel;
@@ -373,9 +533,13 @@ void MainWindow::setupSurroundUi()
 
         auto *spin = new QSpinBox(cellWidget);
         spin->setRange(0, 100);
-        spin->setValue(50);
+        spin->setValue(cell.channel == SurroundProcessor::Lfe ? 0 : 50);
         spin->setMinimumWidth(64);
         spin->setAlignment(Qt::AlignCenter);
+        if (cell.channel == SurroundProcessor::Lfe) {
+            spin->setEnabled(false);
+            spin->setToolTip(QStringLiteral("LFE is disabled for headphone virtual surround to prevent bass rumble."));
+        }
 
         cellLayout->addWidget(label);
         cellLayout->addWidget(spin, 0, Qt::AlignHCenter);
@@ -387,25 +551,66 @@ void MainWindow::setupSurroundUi()
     groupLayout->addLayout(grid);
 }
 
+void MainWindow::setupDynamicsUi()
+{
+    m_dynamicsGroup = new QGroupBox(QStringLiteral("Dynamics"), this);
+    m_dynamicsGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto *groupLayout = new QVBoxLayout(m_dynamicsGroup);
+
+    m_dynamicsEnableCheckBox = new QCheckBox(QStringLiteral("Enable dynamics processing"), m_dynamicsGroup);
+    m_dynamicsEnableCheckBox->setToolTip(
+        QStringLiteral("Enables dynamic range shaping and loudness normalization for the selected app."));
+    m_resetDynamicsButton = new QPushButton(QStringLiteral("Reset"), m_dynamicsGroup);
+    auto *headerRow = new QHBoxLayout();
+    headerRow->addWidget(m_dynamicsEnableCheckBox);
+    headerRow->addWidget(m_resetDynamicsButton);
+    groupLayout->addLayout(headerRow);
+
+    auto *rangeRow = new QHBoxLayout();
+    auto *wideLabel = new QLabel(QStringLiteral("Wide"), m_dynamicsGroup);
+    wideLabel->setToolTip(QStringLiteral("Extra-wide settings preserve almost all macro-dynamics."));
+    m_dynamicsAmountSlider = new QSlider(Qt::Horizontal, m_dynamicsGroup);
+    m_dynamicsAmountSlider->setRange(DynamicRangeSettings::kAmountMin, DynamicRangeSettings::kAmountMax);
+    m_dynamicsAmountSlider->setValue(DynamicRangeSettings::kAmountDefault);
+    auto *tightLabel = new QLabel(QStringLiteral("Tight"), m_dynamicsGroup);
+    tightLabel->setToolTip(QStringLiteral("Extra-tight settings add stronger peak control for maximum consistency."));
+    m_dynamicsModeLabel = new QLabel(dynamicsModeLabelForAmount(DynamicRangeSettings::kAmountDefault), m_dynamicsGroup);
+    m_dynamicsModeLabel->setMinimumWidth(88);
+    m_dynamicsModeLabel->setAlignment(Qt::AlignCenter);
+    rangeRow->addWidget(wideLabel);
+    rangeRow->addWidget(m_dynamicsAmountSlider, 1);
+    rangeRow->addWidget(tightLabel);
+    rangeRow->addWidget(m_dynamicsModeLabel);
+    groupLayout->addLayout(rangeRow);
+
+    auto *loudnessRow = new QHBoxLayout();
+    auto *quietLabel = new QLabel(QStringLiteral("Quiet"), m_dynamicsGroup);
+    quietLabel->setToolTip(QStringLiteral("No loudness normalization."));
+    m_loudnessAmountSlider = new QSlider(Qt::Horizontal, m_dynamicsGroup);
+    m_loudnessAmountSlider->setRange(DynamicRangeSettings::kLoudnessMin, DynamicRangeSettings::kLoudnessMax);
+    m_loudnessAmountSlider->setValue(DynamicRangeSettings::kLoudnessDefault);
+    m_loudnessAmountSlider->setToolTip(
+        QStringLiteral("Normalizes overall loudness toward a target level. "
+                       "Helps quiet games and videos without changing peak-vs-average shape."));
+    auto *loudLabel = new QLabel(QStringLiteral("Loud"), m_dynamicsGroup);
+    loudLabel->setToolTip(QStringLiteral("Stronger normalization toward a louder target level."));
+    m_loudnessTargetLabel = new QLabel(loudnessTargetLabelForAmount(DynamicRangeSettings::kLoudnessDefault), m_dynamicsGroup);
+    m_loudnessTargetLabel->setMinimumWidth(72);
+    m_loudnessTargetLabel->setAlignment(Qt::AlignCenter);
+    loudnessRow->addWidget(quietLabel);
+    loudnessRow->addWidget(m_loudnessAmountSlider, 1);
+    loudnessRow->addWidget(loudLabel);
+    loudnessRow->addWidget(m_loudnessTargetLabel);
+    groupLayout->addLayout(loudnessRow);
+}
+
 void MainWindow::setupEqControls()
 {
-    auto *colorLabel = new QLabel(QStringLiteral("Color:"), ui->eqGroup);
-    m_colorPalette = new EqColorPalette(ui->eqGroup);
-    ui->horizontalLayout_3->insertWidget(0, colorLabel);
-    ui->horizontalLayout_3->insertWidget(1, m_colorPalette);
-
     m_disableAllButton = new QPushButton(QStringLiteral("Disable all"), ui->eqGroup);
     m_disableAllButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     ui->horizontalLayout_3->addWidget(m_disableAllButton);
 
     ui->disableEqButton->setText(QStringLiteral("Disable for app"));
-
-    connect(m_colorPalette, &EqColorPalette::colorSelected, this, [this](const QColor &) {
-        updateEqControlState();
-    });
-    connect(m_colorPalette, &EqColorPalette::selectionChanged, this, [this]() {
-        updateEqControlState();
-    });
 }
 
 void MainWindow::restructureLayout()
@@ -432,6 +637,14 @@ void MainWindow::restructureLayout()
     m_spectrumWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     rightLayout->addWidget(m_spectrumWidget, 1);
 
+    auto *logRow = new QHBoxLayout();
+    logRow->addStretch();
+    m_clearLogButton = new QPushButton(QStringLiteral("Clear log"), this);
+    m_clearLogButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    connect(m_clearLogButton, &QPushButton::clicked, this, &MainWindow::onClearLogClicked);
+    logRow->addWidget(m_clearLogButton);
+    rightLayout->addLayout(logRow, 0);
+
     ui->logTextEdit->setMinimumHeight(80);
     rightLayout->addWidget(ui->logTextEdit, 0);
 
@@ -445,6 +658,7 @@ void MainWindow::restructureLayout()
     ui->eqGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     leftLayout->addWidget(ui->eqGroup, 1);
     leftLayout->addWidget(m_surroundGroup, 0);
+    leftLayout->addWidget(m_dynamicsGroup, 0);
 
     ui->contentRow->addWidget(leftWidget, 1);
     ui->contentRow->addWidget(rightWidget, 2);
@@ -463,6 +677,12 @@ void MainWindow::updateSurroundControlsEnabled()
     if (m_applySurroundButton) {
         m_applySurroundButton->setEnabled(enabled);
     }
+    if (m_hrtfPresetCombo) {
+        m_hrtfPresetCombo->setEnabled(enabled);
+    }
+    if (m_hrtfStrengthSlider) {
+        m_hrtfStrengthSlider->setEnabled(enabled);
+    }
     for (QSpinBox *spin : m_surroundSpins) {
         if (spin) {
             spin->setEnabled(enabled);
@@ -470,29 +690,59 @@ void MainWindow::updateSurroundControlsEnabled()
     }
 }
 
-std::array<int, SurroundProcessor::kChannelCount> MainWindow::readSurroundChannelLevels() const
+void MainWindow::updateDynamicsControlsEnabled()
 {
-    std::array<int, SurroundProcessor::kChannelCount> levels{};
+    const bool enabled = m_dynamicsEnableCheckBox && m_dynamicsEnableCheckBox->isChecked();
+    if (m_resetDynamicsButton) {
+        m_resetDynamicsButton->setEnabled(enabled);
+    }
+    if (m_dynamicsAmountSlider) {
+        m_dynamicsAmountSlider->setEnabled(enabled);
+    }
+    if (m_dynamicsModeLabel) {
+        m_dynamicsModeLabel->setEnabled(enabled);
+    }
+    if (m_loudnessAmountSlider) {
+        m_loudnessAmountSlider->setEnabled(enabled);
+    }
+    if (m_loudnessTargetLabel) {
+        m_loudnessTargetLabel->setEnabled(enabled);
+    }
+}
+
+VirtualSurroundSettings MainWindow::readVirtualSurroundState() const
+{
+    VirtualSurroundSettings settings;
+    settings.enabled = m_surroundEnableCheckBox && m_surroundEnableCheckBox->isChecked();
+    settings.presetId = m_hrtfPresetCombo ? m_hrtfPresetCombo->currentData().toInt() : 0;
+    settings.strength = m_hrtfStrengthSlider ? m_hrtfStrengthSlider->value() : 75;
     for (int i = 0; i < SurroundProcessor::kChannelCount; ++i) {
         QSpinBox *spin = m_surroundSpins[static_cast<size_t>(i)];
-        levels[static_cast<size_t>(i)] = spin ? spin->value() : 50;
+        settings.channelLevels[static_cast<size_t>(i)] = spin ? spin->value() : 50;
     }
-    return levels;
+    return settings;
 }
 
-std::pair<bool, std::array<int, SurroundProcessor::kChannelCount>> MainWindow::readSurroundState() const
-{
-    return {m_surroundEnableCheckBox && m_surroundEnableCheckBox->isChecked(), readSurroundChannelLevels()};
-}
-
-void MainWindow::applySurroundToUi(bool enabled, const std::array<int, SurroundProcessor::kChannelCount> &levels)
+void MainWindow::applySurroundToUi(const VirtualSurroundSettings &settings)
 {
     if (m_surroundEnableCheckBox) {
-        m_surroundEnableCheckBox->setChecked(enabled);
+        m_surroundEnableCheckBox->setChecked(settings.enabled);
+    }
+    if (m_hrtfPresetCombo) {
+        const int index = m_hrtfPresetCombo->findData(settings.presetId);
+        if (index >= 0) {
+            m_hrtfPresetCombo->setCurrentIndex(index);
+        }
+    }
+    if (m_hrtfStrengthSlider) {
+        m_hrtfStrengthSlider->setValue(settings.strength);
+    }
+    if (m_hrtfStrengthValueLabel) {
+        m_hrtfStrengthValueLabel->setText(QStringLiteral("%1%").arg(settings.strength));
     }
     for (int i = 0; i < SurroundProcessor::kChannelCount; ++i) {
         if (QSpinBox *spin = m_surroundSpins[static_cast<size_t>(i)]) {
-            spin->setValue(levels[static_cast<size_t>(i)]);
+            spin->setValue(settings.channelLevels[static_cast<size_t>(i)]);
         }
     }
     updateSurroundControlsEnabled();
@@ -513,9 +763,11 @@ void MainWindow::applySurroundToEngine()
 void MainWindow::saveSurroundSettings()
 {
     AppSettings settings = m_settingsStore.settings();
-    const auto state = readSurroundState();
-    settings.surroundEnabled = state.first;
-    settings.surroundChannelLevels = state.second;
+    const VirtualSurroundSettings state = readVirtualSurroundState();
+    settings.surroundEnabled = state.enabled;
+    settings.hrtfPresetId = state.presetId;
+    settings.hrtfStrength = state.strength;
+    settings.surroundChannelLevels = state.channelLevels;
     m_settingsStore.setSettings(settings);
     m_settingsStore.save();
 }
@@ -532,19 +784,86 @@ void MainWindow::saveSpectrumSettings()
     m_settingsStore.save();
 }
 
+DynamicRangeSettings MainWindow::readDynamicRangeState() const
+{
+    DynamicRangeSettings settings;
+    settings.enabled = m_dynamicsEnableCheckBox && m_dynamicsEnableCheckBox->isChecked();
+    settings.amount = m_dynamicsAmountSlider ? m_dynamicsAmountSlider->value() : DynamicRangeSettings::kAmountDefault;
+    settings.loudnessAmount =
+        m_loudnessAmountSlider ? m_loudnessAmountSlider->value() : DynamicRangeSettings::kLoudnessDefault;
+    return settings;
+}
+
+void MainWindow::applyDynamicRangeToUi(const DynamicRangeSettings &settings)
+{
+    if (m_dynamicsEnableCheckBox) {
+        m_dynamicsEnableCheckBox->setChecked(settings.enabled);
+    }
+    if (m_dynamicsAmountSlider) {
+        m_dynamicsAmountSlider->setValue(settings.amount);
+    }
+    if (m_dynamicsModeLabel) {
+        m_dynamicsModeLabel->setText(dynamicsModeLabelForAmount(settings.amount));
+    }
+    if (m_loudnessAmountSlider) {
+        m_loudnessAmountSlider->setValue(settings.loudnessAmount);
+    }
+    if (m_loudnessTargetLabel) {
+        m_loudnessTargetLabel->setText(loudnessTargetLabelForAmount(settings.loudnessAmount));
+    }
+    updateDynamicsControlsEnabled();
+}
+
+void MainWindow::applyDynamicRangeToEngine()
+{
+    if (!m_eqSessionManager || !m_sessionList) {
+        return;
+    }
+    const unsigned long pid = m_sessionList->selectedProcessId();
+    if (pid == 0) {
+        return;
+    }
+    m_eqSessionManager->pushLiveDynamicsForProcess(pid);
+}
+
+void MainWindow::saveDynamicRangeSettings()
+{
+    AppSettings settings = m_settingsStore.settings();
+    const DynamicRangeSettings state = readDynamicRangeState();
+    settings.dynamicsEnabled = state.enabled;
+    settings.dynamicsAmount = state.amount;
+    settings.dynamicsLoudnessAmount = state.loudnessAmount;
+    m_settingsStore.setSettings(settings);
+    m_settingsStore.save();
+}
+
+void MainWindow::onResetDynamicsClicked()
+{
+    DynamicRangeSettings settings;
+    applyDynamicRangeToUi(settings);
+    applyDynamicRangeToEngine();
+    saveDynamicRangeSettings();
+    appendLog(QStringLiteral("INFO"), QStringLiteral("Dynamics settings reset to defaults"));
+}
+
 void MainWindow::onResetSurroundClicked()
 {
-    applySurroundToUi(true, {50, 50, 50, 50, 50, 50, 50, 50});
+    VirtualSurroundSettings settings;
+    settings.enabled = true;
+    settings.presetId = static_cast<int>(HrtfPresetId::Default);
+    settings.strength = 75;
+    settings.channelLevels = defaultVirtualSurroundChannelLevels();
+    applySurroundToUi(settings);
     applySurroundToEngine();
     saveSurroundSettings();
-    appendLog(QStringLiteral("INFO"), QStringLiteral("7.1 speaker levels reset to 50"));
+    appendLog(QStringLiteral("INFO"), QStringLiteral("Virtual surround speaker levels reset to 50"));
 }
 
 void MainWindow::onApplySurroundClicked()
 {
     applySurroundToEngine();
     saveSurroundSettings();
-    appendLog(QStringLiteral("INFO"), QStringLiteral("7.1 surround settings applied"));
+    appendLog(QStringLiteral("INFO"), QStringLiteral("Virtual surround settings applied"));
 }
 
 void MainWindow::onRefreshClicked()
@@ -579,7 +898,10 @@ void MainWindow::onResetClicked()
     if (m_eqSessionManager && m_sessionList) {
         const unsigned long pid = m_sessionList->selectedProcessId();
         if (pid != 0) {
-            m_eqSessionManager->saveDraftForProcess(pid, readSliderGains(), readSurroundState());
+            m_eqSessionManager->saveDraftForProcess(pid,
+                                                    readSliderGains(),
+                                                    readVirtualSurroundState(),
+                                                    readDynamicRangeState());
         }
     }
 
@@ -589,7 +911,7 @@ void MainWindow::onResetClicked()
 
 void MainWindow::onEnableEq()
 {
-    if (!m_eqSessionManager || !m_sessionList || !m_colorPalette) {
+    if (!m_eqSessionManager || !m_sessionList) {
         return;
     }
 
@@ -599,22 +921,7 @@ void MainWindow::onEnableEq()
         return;
     }
 
-    if (!m_colorPalette->hasSelection()) {
-        const EqSessionSnapshot snapshot = m_eqSessionManager->snapshotFor(pid);
-        if (!snapshot.labelColor.isValid()) {
-            showCopyableError(QStringLiteral("Enable EQ"), QStringLiteral("Pick a color before enabling EQ."));
-            return;
-        }
-    }
-
-    const QColor labelColor = m_colorPalette->hasSelection()
-                                  ? m_colorPalette->selectedColor()
-                                  : m_eqSessionManager->snapshotFor(pid).labelColor;
-
-    if (m_eqSessionManager->enableForProcess(pid, labelColor)) {
-        if (m_colorPalette->hasSelection()) {
-            m_colorPalette->clearSelection();
-        }
+    if (m_eqSessionManager->enableForProcess(pid)) {
         m_sliderEditPid = pid;
         refreshSessionList();
         updateSpectrumForSelection();
@@ -691,6 +998,11 @@ void MainWindow::appendLog(const QString &level, const QString &message)
     ui->logTextEdit->appendPlainText(
         QStringLiteral("[%1] [%2] %3").arg(timestamp, level, message));
     ui->logTextEdit->verticalScrollBar()->setValue(ui->logTextEdit->verticalScrollBar()->maximum());
+}
+
+void MainWindow::onClearLogClicked()
+{
+    ui->logTextEdit->clear();
 }
 
 void MainWindow::showDspVerificationInLog()
@@ -863,8 +1175,20 @@ void MainWindow::applySettings(const AppSettings &settings)
     m_settingsStore.setSettings(settings);
     m_settingsStore.save();
 
-    applySurroundToUi(settings.surroundEnabled, settings.surroundChannelLevels);
+    VirtualSurroundSettings surroundSettings;
+    surroundSettings.enabled = settings.surroundEnabled;
+    surroundSettings.presetId = settings.hrtfPresetId;
+    surroundSettings.strength = settings.hrtfStrength;
+    surroundSettings.channelLevels = settings.surroundChannelLevels;
+    applySurroundToUi(surroundSettings);
     applySurroundToEngine();
+
+    DynamicRangeSettings dynamicRangeSettings;
+    dynamicRangeSettings.enabled = settings.dynamicsEnabled;
+    dynamicRangeSettings.amount = settings.dynamicsAmount;
+    dynamicRangeSettings.loudnessAmount = settings.dynamicsLoudnessAmount;
+    applyDynamicRangeToUi(dynamicRangeSettings);
+    applyDynamicRangeToEngine();
 
     if (m_spectrumWidget) {
         m_spectrumWidget->setSpectrumEnabled(settings.spectrumEnabled);
@@ -884,10 +1208,7 @@ void MainWindow::updateEqControlState()
     const bool anyRunning = m_eqSessionManager && m_eqSessionManager->isAnyRunning();
     const bool selectedRunning = m_eqSessionManager && selectedPid != 0
                                  && m_eqSessionManager->isRunning(selectedPid);
-    const bool canRestore = m_eqSessionManager && m_eqSessionManager->canRestoreProcess(selectedPid);
-    const bool canEnable = m_eqSessionManager && selectedPid != 0 && !selectedRunning
-                           && m_colorPalette
-                           && (m_colorPalette->hasSelection() || canRestore);
+    const bool canEnable = m_eqSessionManager && selectedPid != 0 && !selectedRunning;
 
     if (ui->enableEqButton) {
         ui->enableEqButton->setEnabled(canEnable);
@@ -977,9 +1298,8 @@ void MainWindow::syncSlidersToSelection()
     m_eqSessionManager->applySnapshotToUi(
         pid,
         [this](const std::array<float, EqProcessor::kBandCount> &gains) { applyGainsToSliders(gains); },
-        [this](bool enabled, const std::array<int, SurroundProcessor::kChannelCount> &levels) {
-            applySurroundToUi(enabled, levels);
-        });
+        [this](const VirtualSurroundSettings &settings) { applySurroundToUi(settings); },
+        [this](const DynamicRangeSettings &settings) { applyDynamicRangeToUi(settings); });
     m_loadingSliders = false;
     resetMasterSlider();
 

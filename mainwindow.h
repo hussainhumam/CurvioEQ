@@ -4,12 +4,16 @@
 #include "audio/audioengine.h"
 #include "audio/eqprocessor.h"
 #include "audio/surroundprocessor.h"
+#include "audio/virtualsurroundsettings.h"
+#include "audio/dynamicrangesettings.h"
 #include "ui/presetstore.h"
 #include "ui/settingsstore.h"
 #include "ui/spectrumanalyzer.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QGroupBox>
+#include <QLabel>
 #include <QMainWindow>
 #include <QPushButton>
 #include <QSlider>
@@ -23,7 +27,6 @@ class MainWindow;
 }
 QT_END_NAMESPACE
 
-class EqColorPalette;
 class EqSessionManager;
 class GlobalHotkeyManager;
 class PresetPanelController;
@@ -49,6 +52,7 @@ private slots:
     void onResetClicked();
     void onResetSurroundClicked();
     void onApplySurroundClicked();
+    void onResetDynamicsClicked();
     void onEnableEq();
     void onDisableEq();
     void onDisableAllEq();
@@ -62,21 +66,27 @@ private slots:
     void onQuitApp();
     void onTrayToggleEq(unsigned long processId);
     void onMasterSliderChanged(int value);
+    void onClearLogClicked();
 
 private:
     void setupSurroundUi();
+    void setupDynamicsUi();
     void setupEqControls();
     void restructureLayout();
     void updateSurroundControlsEnabled();
+    void updateDynamicsControlsEnabled();
 
     std::array<float, EqProcessor::kBandCount> readSliderGains() const;
-    std::array<int, SurroundProcessor::kChannelCount> readSurroundChannelLevels() const;
-    std::pair<bool, std::array<int, SurroundProcessor::kChannelCount>> readSurroundState() const;
+    VirtualSurroundSettings readVirtualSurroundState() const;
+    DynamicRangeSettings readDynamicRangeState() const;
 
     void applyGainsToSliders(const std::array<float, EqProcessor::kBandCount> &gains);
-    void applySurroundToUi(bool enabled, const std::array<int, SurroundProcessor::kChannelCount> &levels);
+    void applySurroundToUi(const VirtualSurroundSettings &settings);
+    void applyDynamicRangeToUi(const DynamicRangeSettings &settings);
     void applySurroundToEngine();
+    void applyDynamicRangeToEngine();
     void saveSurroundSettings();
+    void saveDynamicRangeSettings();
     void saveSpectrumSettings();
     void syncSlidersToSelection();
     void updateSpectrumForSelection();
@@ -99,17 +109,28 @@ private:
     PresetPanelController *m_presetPanel = nullptr;
     SessionListController *m_sessionList = nullptr;
     EqSessionManager *m_eqSessionManager = nullptr;
-    EqColorPalette *m_colorPalette = nullptr;
     TrayController *m_tray = nullptr;
     GlobalHotkeyManager *m_hotkeyManager = nullptr;
     SingleInstanceServer *m_singleInstance = nullptr;
 
     QGroupBox *m_surroundGroup = nullptr;
     QCheckBox *m_surroundEnableCheckBox = nullptr;
+    QComboBox *m_hrtfPresetCombo = nullptr;
+    QSlider *m_hrtfStrengthSlider = nullptr;
+    QLabel *m_hrtfStrengthValueLabel = nullptr;
     QPushButton *m_resetSurroundButton = nullptr;
     QPushButton *m_applySurroundButton = nullptr;
     QPushButton *m_disableAllButton = nullptr;
+    QPushButton *m_clearLogButton = nullptr;
     std::array<QSpinBox *, SurroundProcessor::kChannelCount> m_surroundSpins{};
+
+    QGroupBox *m_dynamicsGroup = nullptr;
+    QCheckBox *m_dynamicsEnableCheckBox = nullptr;
+    QPushButton *m_resetDynamicsButton = nullptr;
+    QSlider *m_dynamicsAmountSlider = nullptr;
+    QLabel *m_dynamicsModeLabel = nullptr;
+    QSlider *m_loudnessAmountSlider = nullptr;
+    QLabel *m_loudnessTargetLabel = nullptr;
 
     std::array<QSlider *, EqProcessor::kBandCount> m_bandSliders{};
     QSlider *m_masterSlider = nullptr;

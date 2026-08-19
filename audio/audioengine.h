@@ -1,8 +1,10 @@
 #pragma once
 
 #include "eqprocessor.h"
-#include "surroundprocessor.h"
+#include "virtualsurroundsettings.h"
+#include "dynamicrangesettings.h"
 
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QVector>
@@ -36,21 +38,22 @@ public:
 
     bool startSession(unsigned long processId,
                       const std::array<float, EqProcessor::kBandCount> &gainsDb,
-                      bool surroundEnabled,
-                      const std::array<int, SurroundProcessor::kChannelCount> &surroundLevels,
+                      const VirtualSurroundSettings &virtualSurround,
+                      const DynamicRangeSettings &dynamicRange,
                       const QString &eqOutputDeviceId,
                       const QString &eqOutputDeviceName,
                       const QString &sinkDeviceId,
+                      bool muteRoutingSink,
                       QString *errorMessage);
 
     void stopSession(unsigned long processId);
     void stop();
     void pruneEndedSessions();
+    void maintainActiveSessionRouting();
 
     void setSessionGains(unsigned long processId, const std::array<float, EqProcessor::kBandCount> &gainsDb);
-    void setSessionSurroundEnabled(unsigned long processId, bool enabled);
-    void setSessionSurroundChannelLevels(unsigned long processId,
-                                         const std::array<int, SurroundProcessor::kChannelCount> &levels);
+    void setSessionVirtualSurround(unsigned long processId, const VirtualSurroundSettings &settings);
+    void setSessionDynamicRange(unsigned long processId, const DynamicRangeSettings &settings);
 
 signals:
     void statusChanged(const QString &message);
@@ -58,7 +61,7 @@ signals:
     void sessionStopped(unsigned long processId);
 
 private slots:
-    void handleSessionThreadEnded(unsigned long processId);
+    void handleSessionThreadEnded(unsigned long processId, const QString &errorMessage = QString());
 
 private:
     void mixerThreadMain();
@@ -74,6 +77,8 @@ private:
 
     mutable std::mutex m_sessionsMutex;
     std::vector<std::unique_ptr<EqAudioSession>> m_sessions;
+    QHash<unsigned long, bool> m_sessionMuteRoutingSink;
+    QHash<unsigned long, QString> m_sessionSinkDeviceIds;
 
     std::atomic<bool> m_mixerRunning{false};
     std::atomic<bool> m_mixerStopRequested{false};

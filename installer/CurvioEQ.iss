@@ -1,5 +1,5 @@
 #define MyAppName "CurvioEQ"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "Hussein"
 #define MyAppExeName "bin\CurvioEQ.exe"
 #define DeployDir "..\dist"

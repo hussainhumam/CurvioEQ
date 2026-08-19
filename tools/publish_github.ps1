@@ -1,8 +1,8 @@
 # Run after: gh auth login
-# Usage: powershell -ExecutionPolicy Bypass -File tools/publish_github.ps1 [-Version 1.1.1]
+# Usage: powershell -ExecutionPolicy Bypass -File tools/publish_github.ps1 [-Version 1.2.0]
 
 param(
-    [string]$Version = "1.1.1"
+    [string]$Version = "1.2.0"
 )
 
 $ErrorActionPreference = "Stop"

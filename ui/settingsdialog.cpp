@@ -7,6 +7,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QLabel>
 #include <QVBoxLayout>
 
 SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
@@ -23,6 +24,13 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
 
     m_eqOutputCombo = new QComboBox(this);
     form->addRow(QStringLiteral("EQ output device:"), m_eqOutputCombo);
+
+    m_muteRoutingSinkCheck = new QCheckBox(QStringLiteral("Mute routing sink while EQ is active"), this);
+    m_muteRoutingSinkCheck->setChecked(current.muteRoutingSink);
+    m_muteRoutingSinkCheck->setToolTip(
+        QStringLiteral("Prevents the original app audio from leaking to your headphones when the routing sink "
+                       "is monitored in Voicemeeter or similar mixers."));
+    form->addRow(m_muteRoutingSinkCheck);
 
     m_startWithWindowsCheck = new QCheckBox(
         QStringLiteral("Start %1 when Windows starts").arg(QString::fromLatin1(AppConstants::kAppDisplayName)),
@@ -49,8 +57,8 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
 void SettingsDialog::populateRoutingSinkDevices()
 {
     m_updatingCombos = true;
-    const QString excludeId = m_result.eqOutputDeviceId;
-    m_routingSinkDevices = AudioPolicyRouter::listRenderDevicesExcluding(excludeId);
+    m_routingSinkDevices =
+        AudioPolicyRouter::listRenderDevicesExcluding(m_result.eqOutputDeviceId);
     AudioDeviceResolver::populateCombo(m_routingSinkCombo,
                                        m_routingSinkDevices,
                                        m_result.routingSinkDeviceId,
@@ -64,8 +72,8 @@ void SettingsDialog::populateRoutingSinkDevices()
 void SettingsDialog::populateEqOutputDevices()
 {
     m_updatingCombos = true;
-    const QString excludeId = m_result.routingSinkDeviceId;
-    m_eqOutputDevices = AudioPolicyRouter::listRenderDevicesExcluding(excludeId);
+    m_eqOutputDevices =
+        AudioPolicyRouter::listRenderDevicesExcluding(m_result.routingSinkDeviceId);
     AudioDeviceResolver::populateCombo(m_eqOutputCombo,
                                        m_eqOutputDevices,
                                        m_result.eqOutputDeviceId,
@@ -105,6 +113,7 @@ AppSettings SettingsDialog::resultSettings() const
 void SettingsDialog::accept()
 {
     m_result.startWithWindows = m_startWithWindowsCheck->isChecked();
+    m_result.muteRoutingSink = m_muteRoutingSinkCheck->isChecked();
 
     const int sinkIndex = m_routingSinkCombo->currentIndex();
     if (sinkIndex >= 0 && sinkIndex < m_routingSinkDevices.size()) {

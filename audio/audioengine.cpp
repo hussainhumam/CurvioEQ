@@ -5,6 +5,7 @@
 #include "log.h"
 #include "mixlimiter.h"
 #include "processloopbackcapture.h"
+#include "sinkmutemanager.h"
 #include "ui/appconstants.h"
 #include "wasapirenderer.h"
 
@@ -142,11 +143,12 @@ void AudioEngine::closeRenderer()
 
 bool AudioEngine::startSession(unsigned long processId,
                                const std::array<float, EqProcessor::kBandCount> &gainsDb,
-                               bool surroundEnabled,
-                               const std::array<int, SurroundProcessor::kChannelCount> &surroundLevels,
+                               const VirtualSurroundSettings &virtualSurround,
+                               const DynamicRangeSettings &dynamicRange,
                                const QString &eqOutputDeviceId,
                                const QString &eqOutputDeviceName,
                                const QString &sinkDeviceId,
+                               bool muteRoutingSink,
                                QString *errorMessage)
 {
     const QString tag = QStringLiteral("AudioEngine");
@@ -161,6 +163,14 @@ bool AudioEngine::startSession(unsigned long processId,
 
     if (eqOutputDeviceId.isEmpty()) {
         const QString message = QStringLiteral("No EQ output device");
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    }
+
+    if (sinkDeviceId.isEmpty()) {
+        const QString message = QStringLiteral("No routing sink device");
         if (errorMessage) {
             *errorMessage = message;
         }
@@ -192,16 +202,16 @@ bool AudioEngine::startSession(unsigned long processId,
     SessionStartConfig startConfig;
     startConfig.processId = processId;
     startConfig.gainsDb = gainsDb;
-    startConfig.surroundEnabled = surroundEnabled;
-    startConfig.surroundLevels = surroundLevels;
+    startConfig.virtualSurround = virtualSurround;
+    startConfig.dynamicRange = dynamicRange;
     startConfig.mixSampleRate = m_renderer->sampleRate();
     startConfig.mixChannelCount = m_renderer->channelCount();
     startConfig.sinkDeviceId = sinkDeviceId;
     startConfig.spectrumCapture = m_spectrumCapture;
     startConfig.spectrumProcessId = &m_spectrumProcessId;
-    startConfig.onThreadFinished = [this](unsigned long pid) {
+    startConfig.onThreadFinished = [this](unsigned long pid, const QString &errorMessage) {
         QMetaObject::invokeMethod(this,
-                                  [this, pid]() { handleSessionThreadEnded(pid); },
+                                  [this, pid, errorMessage]() { handleSessionThreadEnded(pid, errorMessage); },
                                   Qt::QueuedConnection);
     };
     if (!session->start(std::move(startConfig), &startError)) {
@@ -217,8 +227,27 @@ bool AudioEngine::startSession(unsigned long processId,
         return false;
     }
 
+    if (!sinkDeviceId.isEmpty()) {
+        QString muteError;
+        if (!SinkMuteManager::instance().acquire(sinkDeviceId, muteRoutingSink, &muteError)) {
+            session->stop();
+            if (errorMessage) {
+                *errorMessage = muteError;
+            }
+            emit errorOccurred(muteError);
+
+            std::lock_guard<std::mutex> lock(m_sessionsMutex);
+            if (m_sessions.empty()) {
+                closeRenderer();
+            }
+            return false;
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lock(m_sessionsMutex);
+        m_sessionMuteRoutingSink.insert(processId, muteRoutingSink);
+        m_sessionSinkDeviceIds.insert(processId, sinkDeviceId);
         m_sessions.push_back(std::move(session));
     }
 
@@ -230,6 +259,8 @@ bool AudioEngine::startSession(unsigned long processId,
 void AudioEngine::stopSession(unsigned long processId)
 {
     std::unique_ptr<EqAudioSession> stoppedSession;
+    QString sinkDeviceId;
+    bool muteRoutingSink = true;
     {
         std::lock_guard<std::mutex> lock(m_sessionsMutex);
         auto it = std::find_if(m_sessions.begin(), m_sessions.end(), [processId](const auto &session) {
@@ -237,12 +268,19 @@ void AudioEngine::stopSession(unsigned long processId)
         });
         if (it != m_sessions.end()) {
             stoppedSession = std::move(*it);
+            sinkDeviceId = m_sessionSinkDeviceIds.value(processId);
+            muteRoutingSink = m_sessionMuteRoutingSink.value(processId, true);
             m_sessions.erase(it);
+            m_sessionMuteRoutingSink.remove(processId);
+            m_sessionSinkDeviceIds.remove(processId);
         }
     }
 
     if (stoppedSession) {
         stoppedSession->stop();
+        if (!sinkDeviceId.isEmpty()) {
+            SinkMuteManager::instance().release(sinkDeviceId, muteRoutingSink);
+        }
         emit statusChanged(QStringLiteral("EQ stopped for PID %1").arg(processId));
         emit sessionStopped(processId);
     }
@@ -262,16 +300,27 @@ void AudioEngine::stopSession(unsigned long processId)
 void AudioEngine::stop()
 {
     std::vector<std::unique_ptr<EqAudioSession>> sessions;
+    QHash<unsigned long, bool> muteRoutingByPid;
+    QHash<unsigned long, QString> sinkDeviceByPid;
     {
         std::lock_guard<std::mutex> lock(m_sessionsMutex);
         sessions = std::move(m_sessions);
+        muteRoutingByPid = m_sessionMuteRoutingSink;
+        sinkDeviceByPid = m_sessionSinkDeviceIds;
         m_sessions.clear();
+        m_sessionMuteRoutingSink.clear();
+        m_sessionSinkDeviceIds.clear();
     }
 
     for (auto &session : sessions) {
         if (session) {
             const unsigned long pid = session->processId();
+            const QString sinkDeviceId = sinkDeviceByPid.value(pid);
+            const bool muteRoutingSink = muteRoutingByPid.value(pid, true);
             session->stop();
+            if (!sinkDeviceId.isEmpty()) {
+                SinkMuteManager::instance().release(sinkDeviceId, muteRoutingSink);
+            }
             emit sessionStopped(pid);
         }
     }
@@ -280,26 +329,51 @@ void AudioEngine::stop()
     emit statusChanged(QStringLiteral("EQ stopped"));
 }
 
-void AudioEngine::handleSessionThreadEnded(unsigned long processId)
+void AudioEngine::maintainActiveSessionRouting()
+{
+    std::lock_guard<std::mutex> lock(m_sessionsMutex);
+    for (const auto &session : m_sessions) {
+        if (session && session->isRunning()) {
+            session->maintainRouting();
+        }
+    }
+}
+
+void AudioEngine::handleSessionThreadEnded(unsigned long processId, const QString &errorMessage)
 {
     if (processId == 0) {
         return;
     }
 
     bool removed = false;
+    QString sinkDeviceId;
+    bool muteRoutingSink = true;
     {
         std::lock_guard<std::mutex> lock(m_sessionsMutex);
         auto it = std::find_if(m_sessions.begin(), m_sessions.end(), [processId](const auto &session) {
             return session && session->processId() == processId;
         });
         if (it != m_sessions.end()) {
+            sinkDeviceId = m_sessionSinkDeviceIds.value(processId);
+            muteRoutingSink = m_sessionMuteRoutingSink.value(processId, true);
             m_sessions.erase(it);
+            m_sessionMuteRoutingSink.remove(processId);
+            m_sessionSinkDeviceIds.remove(processId);
             removed = true;
         }
     }
 
     if (!removed) {
         return;
+    }
+
+    if (!sinkDeviceId.isEmpty()) {
+        SinkMuteManager::instance().release(sinkDeviceId, muteRoutingSink);
+    }
+
+    if (!errorMessage.isEmpty()) {
+        AudioLog::error(QStringLiteral("AudioEngine"), errorMessage);
+        emit errorOccurred(errorMessage);
     }
 
     AudioLog::info(QStringLiteral("AudioEngine"),
@@ -352,24 +426,23 @@ void AudioEngine::setSessionGains(unsigned long processId, const std::array<floa
     }
 }
 
-void AudioEngine::setSessionSurroundEnabled(unsigned long processId, bool enabled)
+void AudioEngine::setSessionVirtualSurround(unsigned long processId, const VirtualSurroundSettings &settings)
 {
     std::lock_guard<std::mutex> lock(m_sessionsMutex);
     for (auto &session : m_sessions) {
         if (session && session->processId() == processId) {
-            session->setSurroundEnabled(enabled);
+            session->setVirtualSurroundSettings(settings);
             return;
         }
     }
 }
 
-void AudioEngine::setSessionSurroundChannelLevels(unsigned long processId,
-                                                  const std::array<int, SurroundProcessor::kChannelCount> &levels)
+void AudioEngine::setSessionDynamicRange(unsigned long processId, const DynamicRangeSettings &settings)
 {
     std::lock_guard<std::mutex> lock(m_sessionsMutex);
     for (auto &session : m_sessions) {
         if (session && session->processId() == processId) {
-            session->setSurroundChannelLevels(levels);
+            session->setDynamicRangeSettings(settings);
             return;
         }
     }

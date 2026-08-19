@@ -5,6 +5,8 @@
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
 
+#include <QString>
+
 namespace {
 
 ISimpleAudioVolume *findSimpleVolumeForProcess(unsigned long processId)
@@ -78,7 +80,7 @@ ISimpleAudioVolume *findSimpleVolumeForProcess(unsigned long processId)
             if (SUCCEEDED(sessionControl2->GetProcessId(&sessionProcessId))
                 && sessionProcessId == processId) {
                 hr = sessionControl2->QueryInterface(__uuidof(ISimpleAudioVolume),
-                                                     reinterpret_cast<void **>(&foundVolume));
+                                                       reinterpret_cast<void **>(&foundVolume));
             }
 
             sessionControl2->Release();
@@ -100,29 +102,6 @@ ISimpleAudioVolume *findSimpleVolumeForProcess(unsigned long processId)
 }
 
 } // namespace
-
-bool AudioSessionVolume::setMute(unsigned long processId, bool muted, QString *errorMessage)
-{
-    ISimpleAudioVolume *volume = findSimpleVolumeForProcess(processId);
-    if (!volume) {
-        if (errorMessage) {
-            *errorMessage = QStringLiteral("No active audio session found for that app");
-        }
-        return false;
-    }
-
-    const HRESULT hr = volume->SetMute(muted ? TRUE : FALSE, nullptr);
-    volume->Release();
-
-    if (FAILED(hr)) {
-        if (errorMessage) {
-            *errorMessage = QStringLiteral("Failed to set app mute state");
-        }
-        return false;
-    }
-
-    return true;
-}
 
 bool AudioSessionVolume::toggleMute(unsigned long processId, QString *errorMessage)
 {
@@ -146,13 +125,11 @@ bool AudioSessionVolume::toggleMute(unsigned long processId, QString *errorMessa
 
     hr = volume->SetMute(muted ? FALSE : TRUE, nullptr);
     volume->Release();
-
     if (FAILED(hr)) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("Failed to toggle app mute state");
         }
         return false;
     }
-
     return true;
 }

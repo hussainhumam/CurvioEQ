@@ -3,6 +3,13 @@
 #include "audiopipeline.h"
 #include "eqprocessor.h"
 #include "resampler.h"
+#include "hrtfpresets.h"
+#include "virtualsurroundprocessor.h"
+#include "virtualsurroundsettings.h"
+#include "dynamicsprocessor.h"
+#include "dynamicrangesettings.h"
+#include "loudnessprocessor.h"
+
 #include "spscringbuffer.h"
 #include "ui/appconstants.h"
 
@@ -286,6 +293,497 @@ int runRingBufferStressTest()
     return 0;
 }
 
+int runVirtualSurroundPassthroughTest()
+{
+    VirtualSurroundProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(false);
+
+    std::vector<float> buffer(256 * 2, 0.f);
+    buffer[0] = 0.75f;
+    buffer[1] = -0.25f;
+    processor.process(buffer.data(), buffer.data(), 256);
+
+    if (!nearlyEqual(buffer[0], 0.75f, 0.001f) || !nearlyEqual(buffer[1], -0.25f, 0.001f)) {
+        dspPrint(true, "  [FAIL] virtual surround disabled passthrough\n");
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   virtual surround disabled passthrough\n");
+    return 0;
+}
+
+int runVirtualSurroundSpatialTest()
+{
+    VirtualSurroundProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setStrength(100);
+    processor.setPreset(static_cast<int>(HrtfPresetId::Default));
+
+    std::array<int, VirtualSurroundProcessor::kSpeakerCount> rearBoost{};
+    rearBoost.fill(50);
+    rearBoost[SurroundProcessor::BackLeft] = 100;
+    rearBoost[SurroundProcessor::FrontLeft] = 0;
+    rearBoost[SurroundProcessor::FrontRight] = 0;
+    rearBoost[SurroundProcessor::FrontCenter] = 0;
+    processor.setChannelLevels(rearBoost);
+
+    std::vector<float> impulse(4096 * 2, 0.f);
+    impulse[0] = 1.f;
+    impulse[1] = 1.f;
+    std::vector<float> output(impulse.size(), 0.f);
+    processor.process(impulse.data(), output.data(), 4096);
+
+    float leftEnergy = 0.f;
+    float rightEnergy = 0.f;
+    for (int frame = 0; frame < 4096; ++frame) {
+        leftEnergy += std::fabs(output[static_cast<size_t>(frame * 2)]);
+        rightEnergy += std::fabs(output[static_cast<size_t>(frame * 2 + 1)]);
+    }
+
+    if (leftEnergy <= 1e-4f && rightEnergy <= 1e-4f) {
+        dspPrint(true, "  [FAIL] virtual surround spatial impulse (silent output)\n");
+        return 1;
+    }
+
+    dspPrint(false,
+             "  [OK]   virtual surround spatial impulse (L=%.3f R=%.3f latency=%d frames)\n",
+             leftEnergy,
+             rightEnergy,
+             processor.latencyFrames());
+    return 0;
+}
+
+int runVirtualSurroundEnabledSmokeTest()
+{
+    VirtualSurroundProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setStrength(80);
+    processor.setPreset(static_cast<int>(HrtfPresetId::Wide));
+
+    std::vector<float> input(512 * 2);
+    for (int i = 0; i < 512; ++i) {
+        const float sample = std::sin(2.f * 3.14159265358979323846f * 220.f * static_cast<float>(i) / 48000.f);
+        input[static_cast<size_t>(i * 2)] = sample;
+        input[static_cast<size_t>(i * 2 + 1)] = sample * 0.5f;
+    }
+
+    std::vector<float> output(input.size(), 0.f);
+    processor.process(input.data(), output.data(), 512);
+
+    for (float sample : output) {
+        if (!std::isfinite(sample)) {
+            dspPrint(true, "  [FAIL] virtual surround enabled smoke (non-finite sample)\n");
+            return 1;
+        }
+    }
+
+    dspPrint(false, "  [OK]   virtual surround enabled smoke\n");
+    return 0;
+}
+
+int runVirtualSurroundLowFrequencyTest()
+{
+    VirtualSurroundProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setStrength(75);
+    processor.setPreset(static_cast<int>(HrtfPresetId::Default));
+    processor.setChannelLevels(defaultVirtualSurroundChannelLevels());
+
+    constexpr int kFrames = 4096;
+    std::vector<float> sine(kFrames * 2);
+    float dryEnergy = 0.f;
+    for (int i = 0; i < kFrames; ++i) {
+        const float sample = std::sin(2.f * 3.14159265358979323846f * 440.f * static_cast<float>(i) / 48000.f);
+        sine[static_cast<size_t>(i * 2)] = sample;
+        sine[static_cast<size_t>(i * 2 + 1)] = sample;
+        dryEnergy += sample * sample;
+    }
+
+    std::vector<float> output(sine.size(), 0.f);
+    processor.process(sine.data(), output.data(), kFrames);
+
+    float wetEnergy = 0.f;
+    for (int i = 0; i < kFrames; ++i) {
+        const float left = output[static_cast<size_t>(i * 2)];
+        const float right = output[static_cast<size_t>(i * 2 + 1)];
+        wetEnergy += left * left + right * right;
+    }
+
+    const float dryRms = std::sqrt(dryEnergy / static_cast<float>(kFrames * 2));
+    const float wetRms = std::sqrt(wetEnergy / static_cast<float>(kFrames * 2));
+    const float ratio = wetRms / std::max(dryRms, 1e-6f);
+
+    if (ratio > 2.5f) {
+        dspPrint(true, "  [FAIL] virtual surround LF gain (ratio=%.3f)\n", ratio);
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   virtual surround LF gain (ratio=%.3f)\n", ratio);
+    return 0;
+}
+
+int runVirtualSurroundNoiseStabilityTest()
+{
+    VirtualSurroundProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setStrength(75);
+    processor.setChannelLevels(defaultVirtualSurroundChannelLevels());
+
+    std::vector<float> noise(4096 * 2);
+    for (size_t i = 0; i < noise.size(); ++i) {
+        const float t = static_cast<float>(i) * 0.013f;
+        noise[i] = std::sin(t) * 0.25f + std::sin(t * 0.37f) * 0.15f;
+    }
+
+    std::vector<float> output(noise.size(), 0.f);
+    processor.process(noise.data(), output.data(), 4096);
+
+    float peak = 0.f;
+    for (float sample : output) {
+        if (!std::isfinite(sample)) {
+            dspPrint(true, "  [FAIL] virtual surround noise stability (non-finite)\n");
+            return 1;
+        }
+        peak = std::max(peak, std::fabs(sample));
+    }
+
+    if (peak > 1.5f) {
+        dspPrint(true, "  [FAIL] virtual surround noise stability (peak=%.3f)\n", peak);
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   virtual surround noise stability (peak=%.3f)\n", peak);
+    return 0;
+}
+
+int runVirtualSurroundBassPreservationTest()
+{
+    VirtualSurroundProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setChannelLevels(defaultVirtualSurroundChannelLevels());
+
+    constexpr int kFrames = 4800;
+    std::vector<float> sine(kFrames * 2);
+    float inputEnergy = 0.f;
+    for (int i = 0; i < kFrames; ++i) {
+        const float sample = 0.5f * std::sin(2.f * 3.14159265358979323846f * 60.f * static_cast<float>(i) / 48000.f);
+        sine[static_cast<size_t>(i * 2)] = sample;
+        sine[static_cast<size_t>(i * 2 + 1)] = sample;
+        inputEnergy += sample * sample + sample * sample;
+    }
+
+    auto measureRatio = [&](int strength) {
+        processor.setStrength(strength);
+        std::vector<float> output(sine.size(), 0.f);
+        processor.process(sine.data(), output.data(), kFrames);
+
+        float outputEnergy = 0.f;
+        for (int i = kFrames / 2; i < kFrames; ++i) {
+            const float left = output[static_cast<size_t>(i * 2)];
+            const float right = output[static_cast<size_t>(i * 2 + 1)];
+            outputEnergy += left * left + right * right;
+        }
+
+        const float inputRms = std::sqrt(inputEnergy / static_cast<float>(kFrames * 2));
+        const float outputRms = std::sqrt(outputEnergy / static_cast<float>((kFrames / 2) * 2));
+        return outputRms / std::max(inputRms, 1e-6f);
+    };
+
+    const float dryRatio = measureRatio(0);
+    if (dryRatio < 0.98f || dryRatio > 1.02f) {
+        dspPrint(true, "  [FAIL] virtual surround bass preservation dry (ratio=%.3f)\n", dryRatio);
+        return 1;
+    }
+
+    const float ratio = measureRatio(75);
+    if (ratio < 0.85f || ratio > 1.2f) {
+        dspPrint(true, "  [FAIL] virtual surround bass preservation (ratio=%.3f)\n", ratio);
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   virtual surround bass preservation (ratio=%.3f)\n", ratio);
+    return 0;
+}
+
+int runDynamicsBypassTest()
+{
+    DynamicsProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(false);
+    processor.setAmount(50);
+
+    constexpr int kFrames = 512;
+    std::vector<float> buffer(kFrames * 2);
+    for (int i = 0; i < kFrames; ++i) {
+        const float sample = 0.4f * std::sin(2.f * 3.14159265358979323846f * 440.f * static_cast<float>(i) / 48000.f);
+        buffer[static_cast<size_t>(i * 2)] = sample;
+        buffer[static_cast<size_t>(i * 2 + 1)] = sample * 0.8f;
+    }
+
+    std::vector<float> output = buffer;
+    processor.process(output.data(), kFrames, 2);
+
+    for (size_t i = 0; i < buffer.size(); ++i) {
+        if (!nearlyEqual(buffer[i], output[i])) {
+            dspPrint(true, "  [FAIL] dynamics disabled passthrough\n");
+            return 1;
+        }
+    }
+
+    dspPrint(false, "  [OK]   dynamics disabled passthrough\n");
+    return 0;
+}
+
+int runDynamicsWideCrestTest()
+{
+    DynamicsProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setAmount(DynamicRangeSettings::kAmountMin);
+
+    constexpr int kFrames = 4800;
+    std::vector<float> input(kFrames * 2);
+    for (int i = 0; i < kFrames; ++i) {
+        const float t = static_cast<float>(i) / 48000.f;
+        const float low = 0.35f * std::sin(2.f * 3.14159265358979323846f * 60.f * t);
+        const float burst = (i % 480) < 48
+            ? 0.75f * std::sin(2.f * 3.14159265358979323846f * 1000.f * t)
+            : 0.f;
+        const float sample = low + burst;
+        input[static_cast<size_t>(i * 2)] = sample;
+        input[static_cast<size_t>(i * 2 + 1)] = sample;
+    }
+
+    auto measureCrest = [](const std::vector<float> &signal, int startFrame, int endFrame) {
+        float peak = 0.f;
+        float energy = 0.f;
+        for (int i = startFrame; i < endFrame; ++i) {
+            const float left = signal[static_cast<size_t>(i * 2)];
+            const float right = signal[static_cast<size_t>(i * 2 + 1)];
+            peak = std::max(peak, std::fabs(left));
+            peak = std::max(peak, std::fabs(right));
+            energy += left * left + right * right;
+        }
+        const float rms = std::sqrt(energy / static_cast<float>((endFrame - startFrame) * 2));
+        return peak / std::max(rms, 1e-6f);
+    };
+
+    const float inputCrest = measureCrest(input, kFrames / 2, kFrames);
+
+    std::vector<float> output = input;
+    processor.process(output.data(), kFrames, 2);
+    const float outputCrest = measureCrest(output, kFrames / 2, kFrames);
+    const float delta = std::fabs(outputCrest - inputCrest) / std::max(inputCrest, 1e-6f);
+
+    if (delta > 0.10f) {
+        dspPrint(true, "  [FAIL] dynamics wide crest preservation (delta=%.3f)\n", delta);
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   dynamics wide crest preservation (delta=%.3f)\n", delta);
+    return 0;
+}
+
+int runDynamicsTightPeakTest()
+{
+    DynamicsProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setAmount(DynamicRangeSettings::kAmountMax);
+
+    constexpr int kFrames = 4800;
+    std::vector<float> input(kFrames * 2);
+    for (int i = 0; i < kFrames; ++i) {
+        const float t = static_cast<float>(i) / 48000.f;
+        const float low = 0.35f * std::sin(2.f * 3.14159265358979323846f * 60.f * t);
+        const float burst = (i % 480) < 48
+            ? 0.85f * std::sin(2.f * 3.14159265358979323846f * 1000.f * t)
+            : 0.f;
+        const float sample = low + burst;
+        input[static_cast<size_t>(i * 2)] = sample;
+        input[static_cast<size_t>(i * 2 + 1)] = sample;
+    }
+
+    float inputPeak = 0.f;
+    for (int i = kFrames / 2; i < kFrames; ++i) {
+        inputPeak = std::max(inputPeak, std::fabs(input[static_cast<size_t>(i * 2)]));
+    }
+
+    std::vector<float> output = input;
+    processor.process(output.data(), kFrames, 2);
+
+    float outputPeak = 0.f;
+    for (int i = kFrames / 2; i < kFrames; ++i) {
+        const float left = output[static_cast<size_t>(i * 2)];
+        const float right = output[static_cast<size_t>(i * 2 + 1)];
+        if (!std::isfinite(left) || !std::isfinite(right)) {
+            dspPrint(true, "  [FAIL] dynamics tight peak (non-finite)\n");
+            return 1;
+        }
+        outputPeak = std::max(outputPeak, std::fabs(left));
+        outputPeak = std::max(outputPeak, std::fabs(right));
+    }
+
+    const float reduction = 1.f - (outputPeak / std::max(inputPeak, 1e-6f));
+    if (reduction < 0.05f || outputPeak > 1.05f) {
+        dspPrint(true, "  [FAIL] dynamics tight peak (reduction=%.3f peak=%.3f)\n", reduction, outputPeak);
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   dynamics tight peak (reduction=%.3f peak=%.3f)\n", reduction, outputPeak);
+    return 0;
+}
+
+int runDynamicsNoiseStabilityTest()
+{
+    DynamicsProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setAmount(75);
+
+    std::vector<float> noise(4096 * 2);
+    for (size_t i = 0; i < noise.size(); ++i) {
+        const float t = static_cast<float>(i) * 0.017f;
+        noise[i] = std::sin(t) * 0.35f + std::sin(t * 0.41f) * 0.2f;
+    }
+
+    processor.process(noise.data(), 4096, 2);
+
+    float peak = 0.f;
+    for (float sample : noise) {
+        if (!std::isfinite(sample)) {
+            dspPrint(true, "  [FAIL] dynamics noise stability (non-finite)\n");
+            return 1;
+        }
+        peak = std::max(peak, std::fabs(sample));
+    }
+
+    if (peak > 1.5f) {
+        dspPrint(true, "  [FAIL] dynamics noise stability (peak=%.3f)\n", peak);
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   dynamics noise stability (peak=%.3f)\n", peak);
+    return 0;
+}
+
+int runLoudnessBypassTest()
+{
+    LoudnessProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setAmount(DynamicRangeSettings::kLoudnessMin);
+
+    constexpr int kFrames = 512;
+    std::vector<float> buffer(kFrames * 2);
+    for (int i = 0; i < kFrames; ++i) {
+        const float sample = 0.4f * std::sin(2.f * 3.14159265358979323846f * 440.f * static_cast<float>(i) / 48000.f);
+        buffer[static_cast<size_t>(i * 2)] = sample;
+        buffer[static_cast<size_t>(i * 2 + 1)] = sample * 0.8f;
+    }
+
+    std::vector<float> output = buffer;
+    processor.process(output.data(), kFrames, 2);
+
+    for (size_t i = 0; i < buffer.size(); ++i) {
+        if (!nearlyEqual(buffer[i], output[i])) {
+            dspPrint(true, "  [FAIL] loudness bypass at zero\n");
+            return 1;
+        }
+    }
+
+    dspPrint(false, "  [OK]   loudness bypass at zero\n");
+    return 0;
+}
+
+int runLoudnessQuietBoostTest()
+{
+    LoudnessProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setAmount(DynamicRangeSettings::kLoudnessMax);
+
+    constexpr int kFrames = 48000;
+    constexpr float kQuietAmplitude = 0.03162f; // ~ -30 dBFS
+    std::vector<float> buffer(kFrames * 2);
+    for (int i = 0; i < kFrames; ++i) {
+        const float sample = kQuietAmplitude * std::sin(2.f * 3.14159265358979323846f * 440.f * static_cast<float>(i) / 48000.f);
+        buffer[static_cast<size_t>(i * 2)] = sample;
+        buffer[static_cast<size_t>(i * 2 + 1)] = sample;
+    }
+
+    auto measureRms = [](const std::vector<float> &signal, int startFrame, int endFrame) {
+        float energy = 0.f;
+        for (int i = startFrame; i < endFrame; ++i) {
+            const float left = signal[static_cast<size_t>(i * 2)];
+            const float right = signal[static_cast<size_t>(i * 2 + 1)];
+            energy += left * left + right * right;
+        }
+        return std::sqrt(energy / static_cast<float>((endFrame - startFrame) * 2));
+    };
+
+    const float inputRms = measureRms(buffer, kFrames / 2, kFrames);
+    processor.process(buffer.data(), kFrames, 2);
+    const float outputRms = measureRms(buffer, kFrames / 2, kFrames);
+
+    for (float sample : buffer) {
+        if (!std::isfinite(sample)) {
+            dspPrint(true, "  [FAIL] loudness quiet boost (non-finite)\n");
+            return 1;
+        }
+    }
+
+    const float boostDb = 20.f * std::log10(outputRms / std::max(inputRms, 1e-9f));
+    if (boostDb < 6.f) {
+        dspPrint(true, "  [FAIL] loudness quiet boost (boost=%.2f dB)\n", boostDb);
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   loudness quiet boost (boost=%.2f dB)\n", boostDb);
+    return 0;
+}
+
+int runLoudnessHotLimitTest()
+{
+    LoudnessProcessor processor;
+    processor.setSampleRate(48000.f);
+    processor.setEnabled(true);
+    processor.setAmount(DynamicRangeSettings::kLoudnessMax);
+
+    constexpr int kFrames = 48000;
+    std::vector<float> buffer(kFrames * 2);
+    for (int i = 0; i < kFrames; ++i) {
+        const float sample = std::sin(2.f * 3.14159265358979323846f * 440.f * static_cast<float>(i) / 48000.f);
+        buffer[static_cast<size_t>(i * 2)] = sample;
+        buffer[static_cast<size_t>(i * 2 + 1)] = sample;
+    }
+
+    processor.process(buffer.data(), kFrames, 2);
+
+    float peak = 0.f;
+    for (float sample : buffer) {
+        if (!std::isfinite(sample)) {
+            dspPrint(true, "  [FAIL] loudness hot limit (non-finite)\n");
+            return 1;
+        }
+        peak = std::max(peak, std::fabs(sample));
+    }
+
+    if (peak > 0.99f) {
+        dspPrint(true, "  [FAIL] loudness hot limit (peak=%.3f)\n", peak);
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   loudness hot limit (peak=%.3f)\n", peak);
+    return 0;
+}
+
 int runVerificationChecks(bool includeRingBufferStress)
 {
     dspPrint(false, "Running DSP verification checks...\n");
@@ -295,6 +793,19 @@ int runVerificationChecks(bool includeRingBufferStress)
     failures += runPipelineSmokeTest();
     failures += runResamplerTest();
     failures += runResamplerContinuityTest();
+    failures += runVirtualSurroundPassthroughTest();
+    failures += runVirtualSurroundSpatialTest();
+    failures += runVirtualSurroundEnabledSmokeTest();
+    failures += runVirtualSurroundLowFrequencyTest();
+    failures += runVirtualSurroundBassPreservationTest();
+    failures += runVirtualSurroundNoiseStabilityTest();
+    failures += runDynamicsBypassTest();
+    failures += runDynamicsWideCrestTest();
+    failures += runDynamicsTightPeakTest();
+    failures += runDynamicsNoiseStabilityTest();
+    failures += runLoudnessBypassTest();
+    failures += runLoudnessQuietBoostTest();
+    failures += runLoudnessHotLimitTest();
     failures += includeRingBufferStress ? runRingBufferStressTest() : runRingBufferQuickTest();
     dspPrint(false, "\n");
 
@@ -327,7 +838,10 @@ void printDspArchitectureState()
                AppConstants::kTargetRingFillFrames,
                AppConstants::kHighRingFillFrames);
     dspPrint(false, "  Mix bus          : soft-knee limiter\n");
-    dspPrint(false, "  Pipeline         : AudioProcessor chain (EQ -> surround optional)\n");
+    dspPrint(false, "  Pipeline         : EQ -> optional HRTF -> optional dynamics -> optional loudness (stereo)\n");
+    dspPrint(false, "  Virtual surround : 8-speaker upmix + HRIR convolution\n");
+    dspPrint(false, "  Dynamic range    : stereo-linked soft-knee compressor (Wide/Tight)\n");
+    dspPrint(false, "  Loudness         : K-weighted gain rider (-24 to -14 LUFS target)\n");
     dspPrint(false, "  Thread hygiene   : FTZ/DAZ + Pro Audio mixer thread\n");
     dspPrint(false, "==========================\n");
 }

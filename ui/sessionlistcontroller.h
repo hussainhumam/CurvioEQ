@@ -33,6 +33,9 @@ signals:
     void refreshRequested();
     void logMessage(const QString &level, const QString &message);
     void errorOccurred(const QString &title, const QString &message);
+    void enableEqRequested(unsigned long processId);
+    void disableEqRequested(unsigned long processId);
+    void soundModsRequested(unsigned long processId);
 
 private slots:
     void onTimer();

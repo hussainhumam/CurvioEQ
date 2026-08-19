@@ -58,6 +58,32 @@ bool activateEndpointVolume(const QString &deviceId, IAudioEndpointVolume **volu
 
 } // namespace
 
+bool AudioEndpointVolume::getMute(const QString &deviceId, bool *muted, QString *errorMessage)
+{
+    if (!muted) {
+        return false;
+    }
+
+    IAudioEndpointVolume *volume = nullptr;
+    if (!activateEndpointVolume(deviceId, &volume, errorMessage)) {
+        return false;
+    }
+
+    BOOL nativeMuted = FALSE;
+    const HRESULT hr = volume->GetMute(&nativeMuted);
+    volume->Release();
+
+    if (FAILED(hr)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Failed to read device mute state");
+        }
+        return false;
+    }
+
+    *muted = nativeMuted == TRUE;
+    return true;
+}
+
 bool AudioEndpointVolume::setMute(const QString &deviceId, bool muted, QString *errorMessage)
 {
     IAudioEndpointVolume *volume = nullptr;

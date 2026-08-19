@@ -26,3 +26,8 @@ QString AppPaths::dataRoot()
 
     return root;
 }
+
+QString AppPaths::soundModsRoot()
+{
+    return QDir(dataRoot()).filePath(QStringLiteral("soundmods"));
+}

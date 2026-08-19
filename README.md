@@ -6,7 +6,7 @@
 
 **Per-app equalizer for Windows** — real-time EQ for individual applications without touching system-wide audio.
 
-Captures audio from a running application via process loopback, applies a 10-band EQ, and plays the result on a device you choose. The target app's original audio is routed to a separate playback device (typically a virtual cable you install yourself).
+Captures audio from a running application via process loopback, applies a 10-band EQ, and plays the result on your headphones or speakers.
 
 ## Screenshot
 
@@ -18,19 +18,17 @@ Captures audio from a running application via process loopback, applies a 10-ban
 
 **Windows 10+** — get the latest installer from [GitHub Releases](https://github.com/hussainhumam/CurvioEQ/releases/latest).
 
-> Requires a virtual audio device for the routing sink (for example VB-Cable, Voicemeeter, or Steam Streaming Speakers).
-
 See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Features
 
 - Per-application EQ — pick any running app and enable EQ without affecting system-wide audio
+- **Virtual sink routing** — route dry app audio to a separate device (VB-Cable, Voicemeeter, Steam Streaming Speakers, etc.)
 - **Multi-app EQ** — run EQ on several apps at once; each keeps its own bands and 7.1 settings, mixed to the same EQ output device
 - Color labels — default blue chip; use **+** to add more colors when enabling EQ on multiple apps
 - Single slider panel — selecting an app loads its EQ/surround settings; non-EQ apps show flat 0 dB bands
 - 10-band equalizer (±20 dB) with master **All** slider and presets in a 2×2 grid
 - Real-time spectrum analyzer
-- EarTrumpet-style per-app output routing to hide original audio while EQ replay plays on your headphones or speakers
 - **Global keybinds** — disable all EQ, mute output device, or mute apps by color label (Settings → Keybinds)
 - **System tray** — per-app Enable/Disable EQ rows, show window, quit; optional autostart
 - Restore EQ routing when a target app exits and is re-enabled
@@ -39,27 +37,32 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 ## How it works
 
 ```
-App A ──route──► Routing sink
-App A ──loopback──► EQ (ex : blue) ──┐
+App ──route──► Routing sink
+App ──loopback──► EQ (ex : blue) ──┐
 App B ──route──► Routing sink   ├── mix ──► EQ output (headphones / speakers)
 App B ──loopback──► EQ (ex : red) ───┘
 ```
 
-CurvioEQ does **not** bundle or install a virtual audio device. Install one yourself (for example VB-Cable or Voicemeeter), then select it under **Settings → Routing sink**.
-Note: Steam Streaming Speakers also work.
+Install a virtual playback device (VB-Cable, Voicemeeter, Steam Streaming Speakers), then select it under **Settings → Routing sink**. CurvioEQ routes the app there, captures via process loopback, and replays EQ on your output device.
 
 ## Setup
 
-1. Install a virtual playback device if you do not already have one.
-2. Open **Settings** and choose:
+1. Install a virtual playback device if needed (VB-Cable, Voicemeeter, Steam Streaming Speakers).
+2. On first launch, pick your **routing sink** and **EQ output device**.
+3. Open **Settings** and confirm:
    - **Routing sink** — where the target app's unprocessed audio goes
    - **EQ output device** — where you hear the EQ'd audio
-3. The two devices must be different.
-4. Select an app (blue is selected by default), click **Enable EQ**. Use **+** next to the color chip to add another color for the next app.
-5. Click an app in the list to edit its EQ — sliders and 7.1 settings switch to that app's saved values.
-6. Use **Disable for app** to stop EQ on the selected app, or **Disable all** to stop every session.
-7. Optional: open **Settings → Keybinds** to assign global shortcuts for disable-all, output mute, and per-color label mute.
-8. Right-click the tray icon for quick per-app Enable/Disable EQ without opening the main window.
+   - **Mute routing sink while EQ is active** — recommended; keeps dry app audio from leaking to your headphones
+4. The routing sink and EQ output device must be different.
+5. Select a running app and click **Enable EQ**.
+6. For Discord and other multi-process apps, enable EQ on the main Discord entry — CurvioEQ routes the full process tree.
+
+### General
+
+1. Click an app in the list to edit its EQ — sliders and 7.1 settings switch to that app's saved values.
+2. Use **Disable for app** to stop EQ on the selected app, or **Disable all** to stop every session.
+3. Optional: open **Settings → Keybinds** for global shortcuts.
+4. Right-click the tray icon for quick per-app Enable/Disable EQ.
 
 ## Build
 
@@ -115,17 +118,9 @@ See [`installer/README.md`](installer/README.md) for details.
 
 ## Settings file
 
-`%AppData%/CurvioEQ/settings.json` stores routing sink, EQ output, keybinds, and startup preferences.
+Settings are stored at `%AppData%/CurvioEQ/settings.json` (version 6). Key fields:
 
-## CLI flags
-
-| Flag | Purpose |
-|------|---------|
-| `--dsp-status` | Print DSP architecture and run verification checks (terminal) |
-| `--startup` | Start hidden to the system tray (used by Windows autostart only) |
-| `--clear-all-routing` | Clear all Windows per-app output overrides (utility) |
-| `--test-route <pid> <deviceId>` | Test routing for a process (utility) |
-
-## License
-
-Proprietary — all rights reserved. See [LICENSE](LICENSE).
+- `setupCompleted` — first-run wizard completed
+- `eqOutputDeviceId` / `eqOutputDeviceName` — where EQ audio plays
+- `routingSinkDeviceId` / `routingSinkDeviceName` — virtual routing sink
+- `muteRoutingSink` — mute the routing sink while EQ is active

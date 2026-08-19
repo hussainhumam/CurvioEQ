@@ -6,4 +6,5 @@ class AppPaths
 {
 public:
     static QString dataRoot();
+    static QString soundModsRoot();
 };

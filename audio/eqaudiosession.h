@@ -5,7 +5,11 @@
 #include "eqprocessor.h"
 #include "resampler.h"
 #include "spscringbuffer.h"
-#include "surroundprocessor.h"
+#include "dynamicsprocessor.h"
+#include "dynamicrangesettings.h"
+#include "loudnessprocessor.h"
+#include "virtualsurroundprocessor.h"
+#include "virtualsurroundsettings.h"
 
 #include <QString>
 
@@ -21,14 +25,14 @@ class SpectrumCapture;
 struct SessionStartConfig {
     unsigned long processId = 0;
     std::array<float, EqProcessor::kBandCount> gainsDb{};
-    bool surroundEnabled = false;
-    std::array<int, SurroundProcessor::kChannelCount> surroundLevels{50, 50, 50, 50, 50, 50, 50, 50};
+    VirtualSurroundSettings virtualSurround{};
+    DynamicRangeSettings dynamicRange{};
     float mixSampleRate = 48000.f;
     int mixChannelCount = 2;
     QString sinkDeviceId;
     SpectrumCapture *spectrumCapture = nullptr;
     std::atomic<unsigned long> *spectrumProcessId = nullptr;
-    std::function<void(unsigned long)> onThreadFinished;
+    std::function<void(unsigned long processId, const QString &errorMessage)> onThreadFinished;
 };
 
 class EqAudioSession
@@ -47,9 +51,14 @@ public:
     bool start(SessionStartConfig config, QString *errorMessage);
     void stop();
 
+    void maintainRouting();
+
     void setGains(const std::array<float, EqProcessor::kBandCount> &gainsDb);
-    void setSurroundEnabled(bool enabled);
-    void setSurroundChannelLevels(const std::array<int, SurroundProcessor::kChannelCount> &levels);
+    void setVirtualSurroundSettings(const VirtualSurroundSettings &settings);
+    void setDynamicRangeSettings(const DynamicRangeSettings &settings);
+
+    QString sinkDeviceId() const { return m_sinkDeviceId; }
+    int routedProcessCount() const { return m_routedProcessCount; }
 
 private:
     struct CaptureBuffers {
@@ -59,7 +68,7 @@ private:
         int maxResampleOutputFrames = 512;
         std::vector<float> capture;
         std::vector<float> eqInput;
-        std::vector<float> surround;
+        std::vector<float> virtualSurround;
         std::vector<float> resampled;
         std::vector<float> mixFormat;
         bool feedSpectrum = false;
@@ -69,16 +78,20 @@ private:
     void threadMain();
     void processCaptureChunk(CaptureBuffers *buffers, int framesRead);
     void clearRoutingIfApplied();
-    void finishThread(unsigned long processId);
+    void finishThread(unsigned long processId, const QString &errorMessage = QString());
 
     unsigned long m_processId = 0;
     float m_mixSampleRate = 48000.f;
     int m_mixChannelCount = 2;
     bool m_routingApplied = false;
+    QString m_sinkDeviceId;
+    int m_routedProcessCount = 0;
 
     EqProcessor m_eqProcessor;
     AudioPipeline m_pipeline;
-    SurroundProcessor m_surroundProcessor;
+    VirtualSurroundProcessor m_virtualSurroundProcessor;
+    DynamicsProcessor m_dynamicsProcessor;
+    LoudnessProcessor m_loudnessProcessor;
     Resampler m_resampler;
     ClockSync m_clockSync;
     std::shared_ptr<SpscRingBuffer> m_ringBuffer;
@@ -88,6 +101,6 @@ private:
 
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stopRequested{false};
-    std::function<void(unsigned long)> m_onThreadFinished;
+    std::function<void(unsigned long processId, const QString &errorMessage)> m_onThreadFinished;
     std::thread m_thread;
 };

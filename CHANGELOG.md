@@ -25,6 +25,10 @@ on virtual sink routing for all sessions.
   - removed all same-device hide logic, duck verification branches, and fallback control flow
   - startup/teardown paths are shorter and easier to reason about
   - routing maintenance now handles only process-tree sink reroute validation
+- Added integrated **dynamic range** and **loudness** stages to the live per-app audio chain:
+  - optional per-session dynamic range compression
+  - optional loudness rider stage to improve low-volume intelligibility
+  - both stages run in the same real-time session pipeline as EQ/surround
 - Session lifecycle behavior is more deterministic:
   - explicit early validation for required sink configuration
   - explicit fail messages when process-tree route does not stick
@@ -48,6 +52,12 @@ on virtual sink routing for all sessions.
 
 ### UI / UX changes
 
+- **Per-app controls**
+  - enabling EQ for multiple apps no longer requires picking a different color each time
+  - color remains optional for grouping/quick identification, not a blocker for multi-app EQ
+- **System tray / context menu**
+  - tray menu now exposes direct **Enable EQ** / **Disable EQ** actions for faster per-app control
+  - reduced clicks to toggle EQ without reopening the main window
 - **Settings dialog**
   - now consistently presents routing sink + EQ output controls
   - removed mode-selection controls and mode-dependent visibility logic
@@ -82,6 +92,7 @@ on virtual sink routing for all sessions.
 - `README.md` rewritten to reflect virtual-sink-only architecture and setup.
 - Removed outdated references to legacy mode toggling and same-device hide behavior.
 - Updated setup guidance to emphasize sink/output separation and routing expectations.
+- Dynamic range + loudness processing is now explicitly documented in the runtime pipeline.
 
 ### Internal quality notes
 

@@ -4,6 +4,21 @@ All notable changes to CurvioEQ are documented here.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-26
+
+Double-click a running app to enable or disable EQ.
+
+### Added
+
+- Double-click an app in **Running Apps** to toggle EQ on or off for that app.
+
+### Changed
+
+- Running Apps hint text mentions the double-click shortcut.
+- Installer version bumped to `1.2.1` in Inno Setup script.
+- Manifest assembly version bumped to `1.2.1.0`.
+- GitHub publish script default/version usage updated to `1.2.1`.
+
 ## [1.2.0] - 2026-08-19
 
 Major routing-model release focused on reliability, determinism, and maintainability.

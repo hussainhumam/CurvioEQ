@@ -670,7 +670,7 @@
          <item>
           <widget class="QLabel" name="runningAppsHintLabel">
            <property name="text">
-            <string>Select an app, adjust sliders or a preset, then Enable EQ</string>
+            <string>Double-click an app to toggle EQ · or select and use Enable EQ</string>
            </property>
            <property name="alignment">
             <set>Qt::AlignmentFlag::AlignCenter</set>

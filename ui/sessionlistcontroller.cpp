@@ -99,6 +99,21 @@ SessionListController::SessionListController(QListView *listView,
 
     connect(m_listView, &QWidget::customContextMenuRequested, this, &SessionListController::showContextMenu);
 
+    connect(m_listView, &QAbstractItemView::doubleClicked, this, [this](const QModelIndex &index) {
+        if (!index.isValid()) {
+            return;
+        }
+        const unsigned long processId = processIdAt(index);
+        if (processId == 0) {
+            return;
+        }
+        if (m_eqSessions.contains(processId)) {
+            emit disableEqRequested(processId);
+        } else {
+            emit enableEqRequested(processId);
+        }
+    });
+
 }
 
 

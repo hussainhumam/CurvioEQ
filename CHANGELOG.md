@@ -2,7 +2,7 @@
 
 All notable changes to CurvioEQ are documented here.
 
-## [Unreleased]
+## [Released]
 
 ## [1.2.1] - 2026-08-26
 

@@ -63,6 +63,7 @@ bool SettingsStore::load()
     m_settings.dynamicsLoudnessAmount = clampLoudnessAmount(
         root.value(QStringLiteral("dynamicsLoudnessAmount")).toInt(DynamicRangeSettings::kLoudnessDefault));
     m_settings.spectrumEnabled = root.value(QStringLiteral("spectrumEnabled")).toBool(true);
+    m_settings.eqUiModeAdvanced = root.value(QStringLiteral("eqUiModeAdvanced")).toBool(false);
     m_settings.keybindsEnabled = root.value(QStringLiteral("keybindsEnabled")).toBool(false);
     m_settings.eqToggleKeybind = root.value(QStringLiteral("eqToggleKeybind")).toString();
     m_settings.outputMuteKeybind = root.value(QStringLiteral("outputMuteKeybind")).toString();
@@ -97,7 +98,7 @@ bool SettingsStore::save() const
     QDir().mkpath(QFileInfo(path).absolutePath());
 
     QJsonObject root;
-    root.insert(QStringLiteral("version"), 6);
+    root.insert(QStringLiteral("version"), 7);
     root.insert(QStringLiteral("startWithWindows"), m_settings.startWithWindows);
     root.insert(QStringLiteral("setupCompleted"), m_settings.setupCompleted);
     root.insert(QStringLiteral("muteRoutingSink"), m_settings.muteRoutingSink);
@@ -112,6 +113,7 @@ bool SettingsStore::save() const
     root.insert(QStringLiteral("dynamicsAmount"), m_settings.dynamicsAmount);
     root.insert(QStringLiteral("dynamicsLoudnessAmount"), m_settings.dynamicsLoudnessAmount);
     root.insert(QStringLiteral("spectrumEnabled"), m_settings.spectrumEnabled);
+    root.insert(QStringLiteral("eqUiModeAdvanced"), m_settings.eqUiModeAdvanced);
     root.insert(QStringLiteral("keybindsEnabled"), m_settings.keybindsEnabled);
     root.insert(QStringLiteral("eqToggleKeybind"), m_settings.eqToggleKeybind);
     root.insert(QStringLiteral("outputMuteKeybind"), m_settings.outputMuteKeybind);

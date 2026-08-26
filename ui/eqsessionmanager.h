@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/eqprocessor.h"
+#include "audio/eqstate.h"
 #include "audio/dynamicrangesettings.h"
 #include "audio/virtualsurroundsettings.h"
 #include "ui/settingsstore.h"
@@ -12,14 +13,13 @@
 #include <QTimer>
 #include <QVector>
 
-#include <array>
 #include <functional>
 
 class AudioEngine;
 
 struct EqSessionSnapshot {
     unsigned long processId = 0;
-    std::array<float, EqProcessor::kBandCount> gains{};
+    EqState eq{};
     QString eqOutputDeviceId;
     QString eqOutputDeviceName;
     QString sinkDeviceId;
@@ -45,7 +45,7 @@ class EqSessionManager : public QObject
 public:
     EqSessionManager(AudioEngine *engine, SettingsStore *store, QObject *parent = nullptr);
 
-    void setGainReader(std::function<std::array<float, EqProcessor::kBandCount>()> reader);
+    void setEqStateReader(std::function<EqState()> reader);
     void setSurroundStateReader(std::function<VirtualSurroundSettings()> reader);
     void setDynamicsStateReader(std::function<DynamicRangeSettings()> reader);
     void setDisplayNameProvider(std::function<QString(unsigned long)> provider);
@@ -67,11 +67,11 @@ public:
     bool restoreForProcess(unsigned long processId);
 
     void saveDraftForProcess(unsigned long processId,
-                             const std::array<float, EqProcessor::kBandCount> &gains,
+                             const EqState &eqState,
                              const VirtualSurroundSettings &virtualSurround,
                              const DynamicRangeSettings &dynamicRange);
     void applySnapshotToUi(unsigned long processId,
-                           const std::function<void(const std::array<float, EqProcessor::kBandCount> &)> &applyGains,
+                           const std::function<void(const EqState &)> &applyEq,
                            const std::function<void(const VirtualSurroundSettings &)> &applySurround,
                            const std::function<void(const DynamicRangeSettings &)> &applyDynamics) const;
 
@@ -105,7 +105,7 @@ private:
     QTimer *m_gainDebounceTimer = nullptr;
     QTimer *m_routingWatchdogTimer = nullptr;
     unsigned long m_pendingGainPid = 0;
-    std::function<std::array<float, EqProcessor::kBandCount>()> m_gainReader;
+    std::function<EqState()> m_eqStateReader;
     std::function<VirtualSurroundSettings()> m_surroundStateReader;
     std::function<DynamicRangeSettings()> m_dynamicsStateReader;
     std::function<QString(unsigned long)> m_displayNameProvider;

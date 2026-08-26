@@ -25,6 +25,7 @@ struct AppSettings {
     int dynamicsAmount = 35;
     int dynamicsLoudnessAmount = 0;
     bool spectrumEnabled = true;
+    bool eqUiModeAdvanced = false;
     bool keybindsEnabled = false;
     QString eqToggleKeybind;
     QString outputMuteKeybind;

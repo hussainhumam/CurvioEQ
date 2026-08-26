@@ -1,37 +1,42 @@
 #include "presetpanelcontroller.h"
 
 #include "ui/appconstants.h"
+#include "ui/autoeqpresetsdialog.h"
 
 #include <QFileDialog>
+#include <QDialog>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSlider>
+#include <QWidget>
 
 PresetPanelController::PresetPanelController(QListWidget *listWidget,
                                              QPushButton *saveButton,
                                              QPushButton *importButton,
-                                             QPushButton *exportButton,
-                                             QPushButton *deleteButton,
+                                             QPushButton *autoEqButton,
                                              PresetStore *store,
                                              QObject *parent)
     : QObject(parent)
     , m_listWidget(listWidget)
     , m_saveButton(saveButton)
     , m_importButton(importButton)
-    , m_exportButton(exportButton)
-    , m_deleteButton(deleteButton)
+    , m_autoEqButton(autoEqButton)
     , m_store(store)
 {
     connect(m_saveButton, &QPushButton::clicked, this, &PresetPanelController::onSaveClicked);
     connect(m_importButton, &QPushButton::clicked, this, &PresetPanelController::onImportClicked);
-    connect(m_exportButton, &QPushButton::clicked, this, &PresetPanelController::onExportClicked);
-    connect(m_deleteButton, &QPushButton::clicked, this, &PresetPanelController::onDeleteClicked);
+    if (m_autoEqButton) {
+        connect(m_autoEqButton, &QPushButton::clicked, this, &PresetPanelController::onAutoEqClicked);
+    }
     connect(m_listWidget, &QListWidget::currentItemChanged, this, &PresetPanelController::onCurrentPresetChanged);
-    connect(m_listWidget, &QListWidget::itemSelectionChanged, this, &PresetPanelController::onSelectionChanged);
+    m_listWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_listWidget, &QListWidget::customContextMenuRequested,
+            this, &PresetPanelController::onPresetContextMenu);
 }
 
 void PresetPanelController::setBandSliders(const std::array<QSlider *, EqProcessor::kBandCount> &sliders)
@@ -39,16 +44,14 @@ void PresetPanelController::setBandSliders(const std::array<QSlider *, EqProcess
     m_bandSliders = sliders;
 }
 
-void PresetPanelController::setGainReader(
-    std::function<std::array<float, EqProcessor::kBandCount>()> reader)
+void PresetPanelController::setEqStateReader(std::function<EqState()> reader)
 {
-    m_gainReader = std::move(reader);
+    m_eqStateReader = std::move(reader);
 }
 
-void PresetPanelController::setEngineGainApplier(
-    std::function<void(const std::array<float, EqProcessor::kBandCount> &)> applier)
+void PresetPanelController::setEqStateApplier(std::function<void(const EqState &)> applier)
 {
-    m_engineGainApplier = std::move(applier);
+    m_eqStateApplier = std::move(applier);
 }
 
 void PresetPanelController::refreshList()
@@ -71,8 +74,11 @@ void PresetPanelController::refreshList()
             m_listWidget->addItem(separator);
         }
 
-        auto *item = new QListWidgetItem(preset.name);
+        auto *item = new QListWidgetItem(displayNameForPreset(preset));
         item->setData(Qt::UserRole, preset.id);
+        if (preset.eq.advanced) {
+            item->setToolTip(QStringLiteral("Advanced parametric preset"));
+        }
         m_listWidget->addItem(item);
     }
 
@@ -84,52 +90,61 @@ void PresetPanelController::refreshList()
         m_listWidget->addItem(separator);
 
         for (const EqPreset &preset : userPresets) {
-            auto *item = new QListWidgetItem(preset.name);
+            auto *item = new QListWidgetItem(displayNameForPreset(preset));
             item->setData(Qt::UserRole, preset.id);
+            if (preset.eq.advanced) {
+                item->setToolTip(QStringLiteral("Advanced parametric preset"));
+            }
             m_listWidget->addItem(item);
         }
     }
 
     selectPresetById(selectedId);
-    onSelectionChanged();
     m_updatingList = false;
 }
 
-void PresetPanelController::applyPresetToSliders(const EqPreset &preset)
+void PresetPanelController::applyPresetToUi(const EqPreset &preset)
 {
-    for (int band = 0; band < EqProcessor::kBandCount; ++band) {
-        const int value = qBound(-AppConstants::kMaxGainDb,
-                                 qRound(preset.gainsDb[static_cast<size_t>(band)]),
-                                 AppConstants::kMaxGainDb);
-        if (m_bandSliders[static_cast<size_t>(band)]) {
-            m_bandSliders[static_cast<size_t>(band)]->setValue(value);
+    if (m_eqStateApplier) {
+        m_eqStateApplier(preset.eq);
+    } else {
+        for (int band = 0; band < EqProcessor::kBandCount; ++band) {
+            const int value = qBound(-AppConstants::kMaxGainDb,
+                                     qRound(preset.eq.gainsDb[static_cast<size_t>(band)]),
+                                     AppConstants::kMaxGainDb);
+            if (m_bandSliders[static_cast<size_t>(band)]) {
+                m_bandSliders[static_cast<size_t>(band)]->setValue(value);
+            }
         }
-    }
-
-    if (m_engineGainApplier && m_gainReader) {
-        m_engineGainApplier(m_gainReader());
     }
 }
 
 void PresetPanelController::onSaveClicked()
 {
-    if (!m_store || !m_gainReader) {
+    if (!m_store || !m_eqStateReader) {
         return;
     }
 
+    const EqState currentEq = m_eqStateReader();
+    const QString defaultName = currentEq.advanced ? QStringLiteral("My Advanced preset")
+                                                   : QStringLiteral("My preset");
+
     bool ok = false;
     const QString name = QInputDialog::getText(m_listWidget,
-                                               QStringLiteral("Save preset"),
-                                               QStringLiteral("Preset name:"),
+                                               currentEq.advanced ? QStringLiteral("Save Advanced preset")
+                                                                  : QStringLiteral("Save preset"),
+                                               currentEq.advanced
+                                                   ? QStringLiteral("Advanced preset name:")
+                                                   : QStringLiteral("Preset name:"),
                                                QLineEdit::Normal,
-                                               QStringLiteral("My preset"),
+                                               defaultName,
                                                &ok);
     if (!ok || name.trimmed().isEmpty()) {
         return;
     }
 
     EqPreset created;
-    if (!m_store->addUserPreset(name.trimmed(), m_gainReader(), &created)) {
+    if (!m_store->addUserPreset(name.trimmed(), currentEq, &created)) {
         emit errorOccurred(QStringLiteral("Save preset failed"),
                            QStringLiteral("Could not write presets to disk"));
         return;
@@ -137,7 +152,9 @@ void PresetPanelController::onSaveClicked()
 
     refreshList();
     selectPresetById(created.id);
-    emit logMessage(QStringLiteral("INFO"), QStringLiteral("Saved preset: %1").arg(created.name));
+    emit logMessage(QStringLiteral("INFO"),
+                    currentEq.advanced ? QStringLiteral("Saved Advanced preset: %1").arg(created.name)
+                                       : QStringLiteral("Saved preset: %1").arg(created.name));
 }
 
 void PresetPanelController::onImportClicked()
@@ -224,6 +241,56 @@ void PresetPanelController::onDeleteClicked()
     emit logMessage(QStringLiteral("INFO"), QStringLiteral("Deleted preset: %1").arg(preset.name));
 }
 
+void PresetPanelController::onAutoEqClicked()
+{
+    if (!m_store) {
+        return;
+    }
+
+    QWidget *parentWidget = m_listWidget ? m_listWidget->window() : nullptr;
+    OnlinePresetsDialog dialog(m_store, parentWidget);
+    if (dialog.exec() != QDialog::Accepted || !dialog.didImport()) {
+        return;
+    }
+
+    const EqPreset imported = dialog.importedPreset();
+    refreshList();
+    selectPresetById(imported.id);
+    applyPresetToUi(imported);
+    emit presetApplied(imported);
+    emit logMessage(QStringLiteral("INFO"),
+                    QStringLiteral("Imported AutoEQ preset: %1").arg(imported.name));
+}
+
+void PresetPanelController::onPresetContextMenu(const QPoint &pos)
+{
+    if (!m_listWidget || !m_store) {
+        return;
+    }
+
+    QListWidgetItem *item = m_listWidget->itemAt(pos);
+    if (!item) {
+        return;
+    }
+
+    const QString presetId = item->data(Qt::UserRole).toString();
+    if (presetId.isEmpty() || !isUserPresetId(presetId)) {
+        return;
+    }
+
+    m_listWidget->setCurrentItem(item);
+
+    QMenu menu(m_listWidget);
+    QAction *exportAction = menu.addAction(QStringLiteral("Export…"));
+    QAction *deleteAction = menu.addAction(QStringLiteral("Delete"));
+    QAction *chosen = menu.exec(m_listWidget->viewport()->mapToGlobal(pos));
+    if (chosen == exportAction) {
+        onExportClicked();
+    } else if (chosen == deleteAction) {
+        onDeleteClicked();
+    }
+}
+
 void PresetPanelController::onCurrentPresetChanged(QListWidgetItem *current, QListWidgetItem *)
 {
     if (m_updatingList || !current || !m_store) {
@@ -240,21 +307,9 @@ void PresetPanelController::onCurrentPresetChanged(QListWidgetItem *current, QLi
         return;
     }
 
-    applyPresetToSliders(preset);
+    applyPresetToUi(preset);
     emit presetApplied(preset);
     emit logMessage(QStringLiteral("INFO"), QStringLiteral("Loaded preset: %1").arg(preset.name));
-}
-
-void PresetPanelController::onSelectionChanged()
-{
-    const QString presetId = selectedPresetId();
-    const bool userPreset = isUserPresetId(presetId);
-    if (m_deleteButton) {
-        m_deleteButton->setEnabled(userPreset);
-    }
-    if (m_exportButton) {
-        m_exportButton->setEnabled(userPreset);
-    }
 }
 
 QString PresetPanelController::selectedPresetId() const
@@ -268,6 +323,14 @@ QString PresetPanelController::selectedPresetId() const
         return {};
     }
     return item->data(Qt::UserRole).toString();
+}
+
+QString PresetPanelController::displayNameForPreset(const EqPreset &preset) const
+{
+    if (preset.eq.advanced) {
+        return QStringLiteral("%1  · Advanced").arg(preset.name);
+    }
+    return preset.name;
 }
 
 bool PresetPanelController::isUserPresetId(const QString &id) const

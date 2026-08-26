@@ -1,6 +1,7 @@
 #pragma once
 
 #include "eqprocessor.h"
+#include "eqstate.h"
 #include "virtualsurroundsettings.h"
 #include "dynamicrangesettings.h"
 
@@ -37,7 +38,7 @@ public:
     void setSpectrumProcessId(unsigned long processId);
 
     bool startSession(unsigned long processId,
-                      const std::array<float, EqProcessor::kBandCount> &gainsDb,
+                      const EqState &eqState,
                       const VirtualSurroundSettings &virtualSurround,
                       const DynamicRangeSettings &dynamicRange,
                       const QString &eqOutputDeviceId,
@@ -51,7 +52,7 @@ public:
     void pruneEndedSessions();
     void maintainActiveSessionRouting();
 
-    void setSessionGains(unsigned long processId, const std::array<float, EqProcessor::kBandCount> &gainsDb);
+    void setSessionEqState(unsigned long processId, const EqState &eqState);
     void setSessionVirtualSurround(unsigned long processId, const VirtualSurroundSettings &settings);
     void setSessionDynamicRange(unsigned long processId, const DynamicRangeSettings &settings);
 

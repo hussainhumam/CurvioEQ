@@ -99,7 +99,7 @@ bool EqAudioSession::start(SessionStartConfig config, QString *errorMessage)
     m_onThreadFinished = std::move(config.onThreadFinished);
     m_routingApplied = false;
 
-    m_eqProcessor.setGains(config.gainsDb);
+    m_eqProcessor.setEqState(config.eqState);
     m_virtualSurroundProcessor.setEnabled(config.virtualSurround.enabled);
     m_virtualSurroundProcessor.setPreset(config.virtualSurround.presetId);
     m_virtualSurroundProcessor.setStrength(config.virtualSurround.strength);
@@ -240,9 +240,9 @@ void EqAudioSession::stop()
     m_onThreadFinished = nullptr;
 }
 
-void EqAudioSession::setGains(const std::array<float, EqProcessor::kBandCount> &gainsDb)
+void EqAudioSession::setEqState(const EqState &eqState)
 {
-    m_eqProcessor.setGains(gainsDb);
+    m_eqProcessor.setEqState(eqState);
 }
 
 void EqAudioSession::setVirtualSurroundSettings(const VirtualSurroundSettings &settings)

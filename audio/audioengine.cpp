@@ -142,7 +142,7 @@ void AudioEngine::closeRenderer()
 }
 
 bool AudioEngine::startSession(unsigned long processId,
-                               const std::array<float, EqProcessor::kBandCount> &gainsDb,
+                               const EqState &eqState,
                                const VirtualSurroundSettings &virtualSurround,
                                const DynamicRangeSettings &dynamicRange,
                                const QString &eqOutputDeviceId,
@@ -201,7 +201,7 @@ bool AudioEngine::startSession(unsigned long processId,
     QString startError;
     SessionStartConfig startConfig;
     startConfig.processId = processId;
-    startConfig.gainsDb = gainsDb;
+    startConfig.eqState = eqState;
     startConfig.virtualSurround = virtualSurround;
     startConfig.dynamicRange = dynamicRange;
     startConfig.mixSampleRate = m_renderer->sampleRate();
@@ -415,12 +415,12 @@ void AudioEngine::pruneEndedSessions()
     }
 }
 
-void AudioEngine::setSessionGains(unsigned long processId, const std::array<float, EqProcessor::kBandCount> &gainsDb)
+void AudioEngine::setSessionEqState(unsigned long processId, const EqState &eqState)
 {
     std::lock_guard<std::mutex> lock(m_sessionsMutex);
     for (auto &session : m_sessions) {
         if (session && session->processId() == processId) {
-            session->setGains(gainsDb);
+            session->setEqState(eqState);
             return;
         }
     }

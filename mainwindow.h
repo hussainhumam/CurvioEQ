@@ -3,6 +3,7 @@
 
 #include "audio/audioengine.h"
 #include "audio/eqprocessor.h"
+#include "audio/eqstate.h"
 #include "audio/surroundprocessor.h"
 #include "audio/virtualsurroundsettings.h"
 #include "audio/dynamicrangesettings.h"
@@ -18,6 +19,7 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
+#include <QStackedWidget>
 
 #include <array>
 
@@ -29,6 +31,7 @@ QT_END_NAMESPACE
 
 class EqSessionManager;
 class GlobalHotkeyManager;
+class ParametricEqPanel;
 class PresetPanelController;
 class SessionListController;
 class SingleInstanceServer;
@@ -67,19 +70,32 @@ private slots:
     void onTrayToggleEq(unsigned long processId);
     void onMasterSliderChanged(int value);
     void onClearLogClicked();
+    void onEqModeToggled();
+    void onParametricEqChanged();
 
 private:
     void setupSurroundUi();
     void setupDynamicsUi();
     void setupEqControls();
+    void setupEqModeUi();
     void restructureLayout();
     void updateSurroundControlsEnabled();
     void updateDynamicsControlsEnabled();
+    void setEqUiModeAdvanced(bool advanced, bool convertState);
+    void persistEqUiMode();
+    void markSimpleEqEdited();
+    void syncEqModeCachesFromState(const EqState &state);
+    void captureAdvancedEntryBaseline(const EqState &state);
+    bool canLeaveAdvancedMode() const;
+    static bool eqStateIsFlat(const EqState &state);
+    static bool eqStatesMatch(const EqState &a, const EqState &b);
 
+    EqState readEqState() const;
     std::array<float, EqProcessor::kBandCount> readSliderGains() const;
     VirtualSurroundSettings readVirtualSurroundState() const;
     DynamicRangeSettings readDynamicRangeState() const;
 
+    void applyEqStateToUi(const EqState &state);
     void applyGainsToSliders(const std::array<float, EqProcessor::kBandCount> &gains);
     void applySurroundToUi(const VirtualSurroundSettings &settings);
     void applyDynamicRangeToUi(const DynamicRangeSettings &settings);
@@ -131,6 +147,24 @@ private:
     QLabel *m_dynamicsModeLabel = nullptr;
     QSlider *m_loudnessAmountSlider = nullptr;
     QLabel *m_loudnessTargetLabel = nullptr;
+
+    QPushButton *m_simpleModeButton = nullptr;
+    QPushButton *m_advancedModeButton = nullptr;
+    QStackedWidget *m_eqModeStack = nullptr;
+    ParametricEqPanel *m_parametricPanel = nullptr;
+    bool m_eqUiModeAdvanced = false;
+
+    // Simple and Advanced keep independent parameters. Mode switches restore
+    // the last values for each mode instead of baking cascade↔parallel (which
+    // rewrites gains and drifts on every toggle).
+    std::array<float, EqProcessor::kBandCount> m_cachedSimpleGains{};
+    EqState m_cachedAdvancedEq{};
+    bool m_hasCachedAdvanced = false;
+    bool m_simpleEditedSinceAdvanced = true;
+    bool m_advancedEdited = false;
+    bool m_advancedPresetLocked = false;
+    bool m_cachedAdvancedPresetLocked = false;
+    EqState m_advancedEntryBaseline{};
 
     std::array<QSlider *, EqProcessor::kBandCount> m_bandSliders{};
     QSlider *m_masterSlider = nullptr;

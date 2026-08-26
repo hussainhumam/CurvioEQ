@@ -18,12 +18,88 @@ EqPreset makeBuiltIn(const QString &id, const QString &name,
     EqPreset preset;
     preset.id = id;
     preset.name = name;
-    preset.gainsDb = gainsDb;
+    preset.eq.advanced = false;
+    preset.eq.gainsDb = gainsDb;
     preset.isBuiltIn = true;
     return preset;
 }
 
+QString filterTypeToStringLocal(EqFilterType type)
+{
+    switch (type) {
+    case EqFilterType::LowShelf:
+        return QStringLiteral("lowshelf");
+    case EqFilterType::HighShelf:
+        return QStringLiteral("highshelf");
+    case EqFilterType::Peaking:
+    default:
+        return QStringLiteral("peaking");
+    }
+}
+
+bool filterTypeFromStringLocal(const QString &text, EqFilterType *type)
+{
+    if (!type) {
+        return false;
+    }
+    const QString key = text.trimmed().toLower();
+    if (key == QLatin1String("lowshelf") || key == QLatin1String("ls")) {
+        *type = EqFilterType::LowShelf;
+        return true;
+    }
+    if (key == QLatin1String("highshelf") || key == QLatin1String("hs")) {
+        *type = EqFilterType::HighShelf;
+        return true;
+    }
+    if (key == QLatin1String("peaking") || key == QLatin1String("pk") || key.isEmpty()) {
+        *type = EqFilterType::Peaking;
+        return true;
+    }
+    return false;
+}
+
 } // namespace
+
+QString PresetStore::filterTypeToString(EqFilterType type)
+{
+    return filterTypeToStringLocal(type);
+}
+
+bool PresetStore::filterTypeFromString(const QString &text, EqFilterType *type)
+{
+    return filterTypeFromStringLocal(text, type);
+}
+
+QJsonObject PresetStore::toJsonObject(const EqPreset &preset)
+{
+    QJsonArray gains;
+    for (float gain : preset.eq.gainsDb) {
+        gains.append(gain);
+    }
+
+    QJsonArray filters;
+    if (preset.eq.advanced) {
+        for (int i = 0; i < preset.eq.filterCount; ++i) {
+            const EqFilter &filter = preset.eq.filters[static_cast<size_t>(i)];
+            QJsonObject filterObject;
+            filterObject.insert(QStringLiteral("type"), filterTypeToStringLocal(filter.type));
+            filterObject.insert(QStringLiteral("fc"), filter.freqHz);
+            filterObject.insert(QStringLiteral("gain"), filter.gainDb);
+            filterObject.insert(QStringLiteral("q"), filter.q);
+            filters.append(filterObject);
+        }
+    }
+
+    QJsonObject object;
+    object.insert(QStringLiteral("id"), preset.id);
+    object.insert(QStringLiteral("name"), preset.name);
+    object.insert(QStringLiteral("mode"),
+                  preset.eq.advanced ? QStringLiteral("advanced") : QStringLiteral("simple"));
+    object.insert(QStringLiteral("gainsDb"), gains);
+    object.insert(QStringLiteral("filters"), filters);
+    object.insert(QStringLiteral("builtIn"), preset.isBuiltIn);
+    return object;
+}
 
 PresetStore::PresetStore() = default;
 
@@ -107,21 +183,11 @@ bool PresetStore::save() const
 
     QJsonArray array;
     for (const EqPreset &preset : m_userPresets) {
-        QJsonArray gains;
-        for (float gain : preset.gainsDb) {
-            gains.append(gain);
-        }
-
-        QJsonObject object;
-        object.insert(QStringLiteral("id"), preset.id);
-        object.insert(QStringLiteral("name"), preset.name);
-        object.insert(QStringLiteral("gainsDb"), gains);
-        object.insert(QStringLiteral("builtIn"), false);
-        array.append(object);
+        array.append(toJsonObject(preset));
     }
 
     QJsonObject root;
-    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("version"), 2);
     root.insert(QStringLiteral("presets"), array);
 
     QFile file(path);
@@ -218,6 +284,9 @@ bool PresetStore::parsePresetObject(const QJsonObject &object, EqPreset *preset,
     parsed.id = object.value(QStringLiteral("id")).toString();
     parsed.name = object.value(QStringLiteral("name")).toString().trimmed();
     parsed.isBuiltIn = object.value(QStringLiteral("builtIn")).toBool(false);
+    parsed.eq.advanced = object.value(QStringLiteral("mode")).toString().compare(
+                             QStringLiteral("advanced"), Qt::CaseInsensitive)
+                         == 0;
 
     if (parsed.name.isEmpty()) {
         if (errorMessage) {
@@ -227,7 +296,33 @@ bool PresetStore::parsePresetObject(const QJsonObject &object, EqPreset *preset,
     }
 
     for (int i = 0; i < EqProcessor::kBandCount; ++i) {
-        parsed.gainsDb[static_cast<size_t>(i)] = static_cast<float>(gains.at(i).toDouble());
+        parsed.eq.gainsDb[static_cast<size_t>(i)] = static_cast<float>(gains.at(i).toDouble());
+    }
+
+    const QJsonArray filters = object.value(QStringLiteral("filters")).toArray();
+    parsed.eq.clearFilters();
+    for (const QJsonValue &value : filters) {
+        if (parsed.eq.filterCount >= EqState::kMaxParametricFilters) {
+            break;
+        }
+        const QJsonObject filterObject = value.toObject();
+        EqFilter filter;
+        if (!filterTypeFromStringLocal(filterObject.value(QStringLiteral("type")).toString(), &filter.type)) {
+            continue;
+        }
+        filter.freqHz = static_cast<float>(filterObject.value(QStringLiteral("fc")).toDouble(1000.0));
+        filter.gainDb = static_cast<float>(filterObject.value(QStringLiteral("gain")).toDouble(0.0));
+        filter.q = static_cast<float>(filterObject.value(QStringLiteral("q")).toDouble(1.41));
+        parsed.eq.filters[static_cast<size_t>(parsed.eq.filterCount++)] = filter;
+    }
+
+    if (parsed.eq.filterCount > 0) {
+        // Parametric filters are Advanced-only; never treat them as Simple.
+        parsed.eq.advanced = true;
+    }
+
+    if (parsed.eq.advanced && parsed.eq.filterCount == 0) {
+        parsed.eq = EqResponse::simpleToAdvanced(parsed.eq.gainsDb);
     }
 
     if (parsed.id.isEmpty()) {
@@ -239,13 +334,13 @@ bool PresetStore::parsePresetObject(const QJsonObject &object, EqPreset *preset,
 }
 
 bool PresetStore::addUserPreset(const QString &name,
-                                const std::array<float, EqProcessor::kBandCount> &gainsDb,
+                                const EqState &eqState,
                                 EqPreset *createdPreset)
 {
     EqPreset preset;
     preset.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     preset.name = makeUniqueName(name, m_userPresets);
-    preset.gainsDb = gainsDb;
+    preset.eq = eqState;
     preset.isBuiltIn = false;
     m_userPresets.push_back(preset);
 
@@ -325,20 +420,9 @@ bool PresetStore::exportToFile(const QString &id, const QString &path, QString *
         return false;
     }
 
-    QJsonArray gains;
-    for (float gain : preset.gainsDb) {
-        gains.append(gain);
-    }
-
-    QJsonObject object;
-    object.insert(QStringLiteral("id"), preset.id);
-    object.insert(QStringLiteral("name"), preset.name);
-    object.insert(QStringLiteral("gainsDb"), gains);
-    object.insert(QStringLiteral("builtIn"), false);
-
     QJsonObject root;
-    root.insert(QStringLiteral("version"), 1);
-    root.insert(QStringLiteral("presets"), QJsonArray{object});
+    root.insert(QStringLiteral("version"), 2);
+    root.insert(QStringLiteral("presets"), QJsonArray{toJsonObject(preset)});
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

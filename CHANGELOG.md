@@ -6,18 +6,31 @@ All notable changes to CurvioEQ are documented here.
 
 ## [1.2.1] - 2026-08-26
 
-Double-click a running app to enable or disable EQ.
+Advanced EQ, online headphone presets, DSP stabilization, and a quicker per-app EQ toggle.
 
 ### Added
 
-- Double-click an app in **Running Apps** to toggle EQ on or off for that app.
+- **Advanced mode** — parametric EQ so you can shape the curve precisely (peaking / low shelf / high shelf, Frequency, Gain, Q, and a live frequency-response graph). Simple mode keeps the 10-band sliders.
+- **Online presets…** — browse **AutoEQ**, **Squiglink**, and **OPRA** databases, with a source filter (All / AutoEQ / Squiglink / OPRA). Squiglink FR measurements import as flat-target Advanced EQ. The list loads **500** profiles at a time and appends more when you scroll.
+- Double-click an app in **Running Apps** to toggle EQ on or off.
 
 ### Changed
 
+- Advanced presets persist parametric filters (presets.json v2); Simple presets remain compatible. AutoEQ import prefers ParametricEQ.txt in Advanced mode.
+- Advanced EQ filter picker is a compact dropdown; add/remove is on the graph right-click menu (**Add dot** / **Remove dot**). Hovering a handle shows Type / Fc / Gain / Q.
+- Switching Advanced → Simple is blocked for loaded Advanced/AutoEQ presets (info dialog); Simple→Advanced peeks, and flat/zero EQ can still switch back. Advanced-saved presets are labeled **· Advanced** and open Advanced mode automatically.
+- Preset **Export** / **Delete** moved to the presets list right-click context menu.
 - Running Apps hint text mentions the double-click shortcut.
 - Installer version bumped to `1.2.1` in Inno Setup script.
 - Manifest assembly version bumped to `1.2.1.0`.
 - GitHub publish script default/version usage updated to `1.2.1`.
+
+### Fixed
+
+- Bug fixes, DSP stabilization, and compatibility fixes across the EQ pipeline (lock-free coefficient swaps, gain ramps, Simple/Advanced session state).
+- Switching Simple ↔ Advanced no longer rewrites EQ parameters via cascade↔parallel conversion; each mode keeps its own last values.
+- Advanced EQ curve handles now sit on the composite frequency-response line (and drag follows that curve).
+- Advanced EQ handles no longer jump / mark the curve as edited when the window is resized.
 
 ## [1.2.0] - 2026-08-19
 

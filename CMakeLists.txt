@@ -30,6 +30,7 @@ qt_add_executable(CurvioEQ
     audio/wasapirenderer.h
     audio/eqprocessor.cpp
     audio/eqprocessor.h
+    audio/eqstate.h
     audio/surroundprocessor.cpp
     audio/surroundprocessor.h
     audio/fft/realfft.cpp
@@ -100,6 +101,18 @@ qt_add_executable(CurvioEQ
     ui/singleinstanceserver.h
     ui/presetpanelcontroller.cpp
     ui/presetpanelcontroller.h
+    ui/autoeqcatalog.cpp
+    ui/autoeqcatalog.h
+    ui/autoeqpresetsdialog.cpp
+    ui/autoeqpresetsdialog.h
+    ui/opracatalog.cpp
+    ui/opracatalog.h
+    ui/squiglinkcatalog.cpp
+    ui/squiglinkcatalog.h
+    ui/eqcurvewidget.cpp
+    ui/eqcurvewidget.h
+    ui/parametriceqpanel.cpp
+    ui/parametriceqpanel.h
     ui/sessionlistcontroller.cpp
     ui/sessionlistcontroller.h
     ui/eqsessionmanager.cpp

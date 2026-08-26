@@ -15,6 +15,7 @@
 #include "ui/globalhotkeymanager.h"
 #include "ui/keybindsdialog.h"
 #include "ui/presetpanelcontroller.h"
+#include "ui/parametriceqpanel.h"
 #include "ui/sessionlistcontroller.h"
 #include "ui/settingsdialog.h"
 #include "ui/setupdialog.h"
@@ -24,6 +25,7 @@
 #include "ui/traycontroller.h"
 
 #include <QApplication>
+#include <QButtonGroup>
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QFont>
@@ -33,6 +35,7 @@
 #include <QMessageBox>
 #include <QScrollBar>
 #include <QShowEvent>
+#include <QStackedWidget>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -135,7 +138,11 @@ MainWindow::MainWindow(QWidget *parent)
         slider->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         slider->setValue(0);
         connect(slider, &QSlider::valueChanged, this, [this](int) {
-            if (m_loadingSliders || !m_eqSessionManager) {
+            if (m_loadingSliders) {
+                return;
+            }
+            markSimpleEqEdited();
+            if (!m_eqSessionManager) {
                 return;
             }
             const unsigned long pid = m_sessionList ? m_sessionList->selectedProcessId() : 0UL;
@@ -202,6 +209,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->eqPanelLayout->setStretch(1, 0);
     ui->centralwidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
+    setupEqModeUi();
+
     ui->runningAppsLayout->setStretch(1, 1);
 
     m_sessionList = new SessionListController(ui->appListView,
@@ -248,7 +257,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshClicked);
 
     m_eqSessionManager = new EqSessionManager(&m_audioEngine, &m_settingsStore, this);
-    m_eqSessionManager->setGainReader([this]() { return readSliderGains(); });
+    m_eqSessionManager->setEqStateReader([this]() { return readEqState(); });
     m_eqSessionManager->setSurroundStateReader([this]() { return readVirtualSurroundState(); });
     m_eqSessionManager->setDynamicsStateReader([this]() { return readDynamicRangeState(); });
     m_eqSessionManager->setDisplayNameProvider([this](unsigned long pid) {
@@ -274,13 +283,17 @@ MainWindow::MainWindow(QWidget *parent)
     m_presetPanel = new PresetPanelController(ui->presetsListWidget,
                                               ui->savePresetButton,
                                               ui->importPresetButton,
-                                              ui->exportPresetButton,
-                                              ui->deletePresetButton,
+                                              ui->autoEqPresetsButton,
                                               &m_presetStore,
                                               this);
     m_presetPanel->setBandSliders(m_bandSliders);
-    m_presetPanel->setGainReader([this]() { return readSliderGains(); });
-    m_presetPanel->setEngineGainApplier([this](const std::array<float, EqProcessor::kBandCount> &gains) {
+    m_presetPanel->setEqStateReader([this]() { return readEqState(); });
+    m_presetPanel->setEqStateApplier([this](const EqState &state) {
+        EqState applied = state;
+        if (applied.filterCount > 0) {
+            applied.advanced = true;
+        }
+        applyEqStateToUi(applied);
         if (!m_eqSessionManager || !m_sessionList) {
             return;
         }
@@ -288,12 +301,25 @@ MainWindow::MainWindow(QWidget *parent)
         if (pid == 0) {
             return;
         }
-        m_eqSessionManager->saveDraftForProcess(pid, gains, readVirtualSurroundState(), readDynamicRangeState());
+        m_eqSessionManager->saveDraftForProcess(pid, applied, readVirtualSurroundState(),
+                                                readDynamicRangeState());
     });
     connect(m_presetPanel, &PresetPanelController::logMessage, this, &MainWindow::appendLog);
     connect(m_presetPanel, &PresetPanelController::errorOccurred, this, &MainWindow::showCopyableError);
-    connect(m_presetPanel, &PresetPanelController::presetApplied, this, [this](const EqPreset &) {
+    connect(m_presetPanel, &PresetPanelController::presetApplied, this, [this](const EqPreset &preset) {
+        applyEqStateToUi(preset.eq);
         resetMasterSlider();
+        persistEqUiMode();
+        if (m_eqSessionManager && m_sessionList) {
+            const unsigned long pid = m_sessionList->selectedProcessId();
+            if (pid != 0) {
+                m_eqSessionManager->scheduleLiveGainsForProcess(pid);
+            }
+        }
+        if (preset.eq.advanced || preset.eq.filterCount > 0) {
+            appendLog(QStringLiteral("INFO"),
+                      QStringLiteral("Advanced preset loaded (Advanced mode): %1").arg(preset.name));
+        }
     });
     m_presetPanel->refreshList();
 
@@ -613,6 +639,269 @@ void MainWindow::setupEqControls()
     ui->disableEqButton->setText(QStringLiteral("Disable for app"));
 }
 
+void MainWindow::setupEqModeUi()
+{
+    auto *modeRow = new QHBoxLayout();
+    modeRow->setContentsMargins(0, 0, 0, 0);
+    modeRow->setSpacing(6);
+
+    m_simpleModeButton = new QPushButton(QStringLiteral("Simple"), ui->eqGroup);
+    m_advancedModeButton = new QPushButton(QStringLiteral("Advanced"), ui->eqGroup);
+    m_simpleModeButton->setCheckable(true);
+    m_advancedModeButton->setCheckable(true);
+    m_simpleModeButton->setChecked(true);
+
+    auto *modeGroup = new QButtonGroup(this);
+    modeGroup->setExclusive(true);
+    modeGroup->addButton(m_simpleModeButton);
+    modeGroup->addButton(m_advancedModeButton);
+
+    modeRow->addWidget(m_simpleModeButton);
+    modeRow->addWidget(m_advancedModeButton);
+    modeRow->addStretch(1);
+    ui->eqPanelLayout->insertLayout(0, modeRow);
+
+    m_eqModeStack = new QStackedWidget(ui->eqGroup);
+    m_eqModeStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    auto *simplePage = new QWidget(m_eqModeStack);
+    simplePage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    auto *simpleLayout = new QVBoxLayout(simplePage);
+    simpleLayout->setContentsMargins(0, 0, 0, 0);
+    simpleLayout->setSpacing(0);
+
+    // QLayout inherits QLayoutItem, so takeAt() returns the layout itself.
+    // Do not delete that pointer — ownership moves to simpleLayout via addLayout().
+    for (int i = 0; i < ui->eqPanelLayout->count(); ++i) {
+        QLayoutItem *item = ui->eqPanelLayout->itemAt(i);
+        if (item && item->layout() == ui->sliderRow) {
+            ui->eqPanelLayout->takeAt(i);
+            simpleLayout->addLayout(ui->sliderRow, 1);
+            break;
+        }
+    }
+
+    m_parametricPanel = new ParametricEqPanel(m_eqModeStack);
+    m_parametricPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_eqModeStack->addWidget(simplePage);
+    m_eqModeStack->addWidget(m_parametricPanel);
+    ui->eqPanelLayout->insertWidget(1, m_eqModeStack, 1);
+    ui->eqPanelLayout->setStretch(0, 0);
+    ui->eqPanelLayout->setStretch(1, 1);
+    ui->eqPanelLayout->setStretch(2, 0);
+
+    connect(m_simpleModeButton, &QPushButton::clicked, this, &MainWindow::onEqModeToggled);
+    connect(m_advancedModeButton, &QPushButton::clicked, this, &MainWindow::onEqModeToggled);
+    connect(m_parametricPanel, &ParametricEqPanel::eqChanged, this, &MainWindow::onParametricEqChanged);
+}
+
+void MainWindow::markSimpleEqEdited()
+{
+    m_cachedSimpleGains = readSliderGains();
+    m_simpleEditedSinceAdvanced = true;
+}
+
+void MainWindow::syncEqModeCachesFromState(const EqState &state)
+{
+    m_cachedSimpleGains = state.gainsDb;
+    if (state.advanced && state.filterCount > 0) {
+        m_cachedAdvancedEq = state;
+        m_cachedAdvancedEq.advanced = true;
+        m_hasCachedAdvanced = true;
+        m_simpleEditedSinceAdvanced = false;
+        captureAdvancedEntryBaseline(m_cachedAdvancedEq);
+        m_advancedEdited = !eqStateIsFlat(m_cachedAdvancedEq);
+        // Any loaded Advanced EQ (preset / AutoEQ) stays Advanced-only until Reset/flat.
+        m_advancedPresetLocked = !eqStateIsFlat(m_cachedAdvancedEq);
+        m_cachedAdvancedPresetLocked = m_advancedPresetLocked;
+    } else {
+        m_cachedAdvancedEq = EqResponse::simpleToAdvanced(state.gainsDb);
+        m_hasCachedAdvanced = true;
+        m_simpleEditedSinceAdvanced = false;
+        captureAdvancedEntryBaseline(m_cachedAdvancedEq);
+        m_advancedEdited = false;
+        m_advancedPresetLocked = false;
+        m_cachedAdvancedPresetLocked = false;
+    }
+}
+
+void MainWindow::captureAdvancedEntryBaseline(const EqState &state)
+{
+    m_advancedEntryBaseline = state;
+    m_advancedEntryBaseline.advanced = true;
+}
+
+bool MainWindow::eqStateIsFlat(const EqState &state)
+{
+    if (state.advanced) {
+        for (int i = 0; i < state.filterCount; ++i) {
+            if (std::fabs(state.filters[static_cast<size_t>(i)].gainDb) > 0.05f) {
+                return false;
+            }
+        }
+        return true;
+    }
+    for (float gain : state.gainsDb) {
+        if (std::fabs(gain) > 0.05f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MainWindow::eqStatesMatch(const EqState &a, const EqState &b)
+{
+    if (a.filterCount != b.filterCount) {
+        return false;
+    }
+    for (int i = 0; i < a.filterCount; ++i) {
+        const EqFilter &fa = a.filters[static_cast<size_t>(i)];
+        const EqFilter &fb = b.filters[static_cast<size_t>(i)];
+        if (fa.type != fb.type
+            || std::fabs(fa.freqHz - fb.freqHz) > 0.5f
+            || std::fabs(fa.gainDb - fb.gainDb) > 0.05f
+            || std::fabs(fa.q - fb.q) > 0.02f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MainWindow::canLeaveAdvancedMode() const
+{
+    const EqState current = m_parametricPanel ? m_parametricPanel->eqState() : m_cachedAdvancedEq;
+    if (eqStateIsFlat(current)) {
+        return true;
+    }
+    // Loaded Advanced / AutoEQ presets cannot be used in Simple, even if untouched.
+    if (m_advancedPresetLocked) {
+        return false;
+    }
+    // Simple→Advanced peek with no real edits may return to Simple.
+    if (!m_advancedEdited || eqStatesMatch(current, m_advancedEntryBaseline)) {
+        return true;
+    }
+    return false;
+}
+
+void MainWindow::setEqUiModeAdvanced(bool advanced, bool convertState)
+{
+    m_eqUiModeAdvanced = advanced;
+    if (m_simpleModeButton) {
+        m_simpleModeButton->setChecked(!advanced);
+    }
+    if (m_advancedModeButton) {
+        m_advancedModeButton->setChecked(advanced);
+    }
+    if (m_eqModeStack) {
+        m_eqModeStack->setCurrentIndex(advanced ? 1 : 0);
+    }
+
+    if (convertState) {
+        if (advanced) {
+            m_cachedSimpleGains = readSliderGains();
+            const bool convertFromSimple = m_simpleEditedSinceAdvanced || !m_hasCachedAdvanced;
+            if (convertFromSimple) {
+                m_cachedAdvancedEq = EqResponse::simpleToAdvanced(m_cachedSimpleGains);
+                m_hasCachedAdvanced = true;
+                m_simpleEditedSinceAdvanced = false;
+                m_advancedEdited = false;
+                m_advancedPresetLocked = false;
+                m_cachedAdvancedPresetLocked = false;
+            } else {
+                m_advancedEdited = !eqStateIsFlat(m_cachedAdvancedEq);
+                m_advancedPresetLocked = m_cachedAdvancedPresetLocked;
+            }
+            if (m_parametricPanel) {
+                m_parametricPanel->setEqState(m_cachedAdvancedEq);
+            }
+            captureAdvancedEntryBaseline(m_cachedAdvancedEq);
+        } else if (m_parametricPanel) {
+            m_cachedAdvancedEq = m_parametricPanel->eqState();
+            m_cachedAdvancedEq.advanced = true;
+            m_hasCachedAdvanced = true;
+            m_cachedAdvancedPresetLocked = m_advancedPresetLocked;
+            m_loadingSliders = true;
+            applyGainsToSliders(m_cachedSimpleGains);
+            m_loadingSliders = false;
+        }
+    }
+
+    if (m_masterSlider) {
+        m_masterSlider->setEnabled(!advanced);
+    }
+}
+
+void MainWindow::persistEqUiMode()
+{
+    AppSettings settings = m_settingsStore.settings();
+    settings.eqUiModeAdvanced = m_eqUiModeAdvanced;
+    m_settingsStore.setSettings(settings);
+    m_settingsStore.save();
+}
+
+void MainWindow::onEqModeToggled()
+{
+    const bool wantAdvanced = m_advancedModeButton && m_advancedModeButton->isChecked();
+    if (wantAdvanced == m_eqUiModeAdvanced) {
+        return;
+    }
+
+    if (m_eqUiModeAdvanced && !wantAdvanced && !canLeaveAdvancedMode()) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Advanced preset"),
+            QStringLiteral(
+                "An Advanced preset can't be used in Simple mode.\n\n"
+                "Simple uses 10 fixed bands; Advanced uses parametric filters "
+                "that don't convert cleanly.\n\n"
+                "Stay in Advanced, or Reset to 0 dB if you want to switch back to Simple."));
+        if (m_advancedModeButton) {
+            m_advancedModeButton->setChecked(true);
+        }
+        if (m_simpleModeButton) {
+            m_simpleModeButton->setChecked(false);
+        }
+        return;
+    }
+
+    setEqUiModeAdvanced(wantAdvanced, true);
+    persistEqUiMode();
+
+    if (m_eqSessionManager && m_sessionList) {
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid != 0) {
+            m_eqSessionManager->scheduleLiveGainsForProcess(pid);
+        }
+    }
+}
+
+void MainWindow::onParametricEqChanged()
+{
+    if (m_loadingSliders || !m_eqUiModeAdvanced) {
+        return;
+    }
+    if (m_parametricPanel) {
+        m_cachedAdvancedEq = m_parametricPanel->eqState();
+        m_cachedAdvancedEq.advanced = true;
+        m_hasCachedAdvanced = true;
+        m_simpleEditedSinceAdvanced = false;
+        m_advancedEdited = !eqStateIsFlat(m_cachedAdvancedEq)
+                           && !eqStatesMatch(m_cachedAdvancedEq, m_advancedEntryBaseline);
+        if (m_advancedEdited) {
+            // Manual Advanced edits also lock Simple until Reset/flat.
+            m_advancedPresetLocked = !eqStateIsFlat(m_cachedAdvancedEq);
+            m_cachedAdvancedPresetLocked = m_advancedPresetLocked;
+        }
+    }
+    if (m_eqSessionManager && m_sessionList) {
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid != 0) {
+            m_eqSessionManager->scheduleLiveGainsForProcess(pid);
+        }
+    }
+}
+
 void MainWindow::restructureLayout()
 {
     ui->mainLayout->removeWidget(ui->logTextEdit);
@@ -891,7 +1180,15 @@ void MainWindow::refreshSessionList()
 void MainWindow::onResetClicked()
 {
     m_loadingSliders = true;
-    applyGainsToSliders({});
+    EqState flat;
+    if (m_eqUiModeAdvanced && m_parametricPanel) {
+        flat.advanced = true;
+        flat = EqResponse::simpleToAdvanced(flat.gainsDb);
+        m_parametricPanel->setEqState(flat);
+    } else {
+        applyGainsToSliders({});
+    }
+    syncEqModeCachesFromState(flat);
     m_loadingSliders = false;
     resetMasterSlider();
 
@@ -899,7 +1196,7 @@ void MainWindow::onResetClicked()
         const unsigned long pid = m_sessionList->selectedProcessId();
         if (pid != 0) {
             m_eqSessionManager->saveDraftForProcess(pid,
-                                                    readSliderGains(),
+                                                    readEqState(),
                                                     readVirtualSurroundState(),
                                                     readDynamicRangeState());
         }
@@ -1194,6 +1491,8 @@ void MainWindow::applySettings(const AppSettings &settings)
         m_spectrumWidget->setSpectrumEnabled(settings.spectrumEnabled);
     }
 
+    setEqUiModeAdvanced(settings.eqUiModeAdvanced, false);
+
     QString startupError;
     if (!SettingsStore::applyStartWithWindows(settings.startWithWindows, &startupError)) {
         showCopyableError(QStringLiteral("Startup setting failed"), startupError);
@@ -1273,6 +1572,7 @@ void MainWindow::onMasterSliderChanged(int value)
         slider->setValue(next);
     }
     m_loadingSliders = false;
+    markSimpleEqEdited();
 
     if (m_eqSessionManager && m_sessionList) {
         const unsigned long pid = m_sessionList->selectedProcessId();
@@ -1297,7 +1597,7 @@ void MainWindow::syncSlidersToSelection()
     m_loadingSliders = true;
     m_eqSessionManager->applySnapshotToUi(
         pid,
-        [this](const std::array<float, EqProcessor::kBandCount> &gains) { applyGainsToSliders(gains); },
+        [this](const EqState &eq) { applyEqStateToUi(eq); },
         [this](const VirtualSurroundSettings &settings) { applySurroundToUi(settings); },
         [this](const DynamicRangeSettings &settings) { applyDynamicRangeToUi(settings); });
     m_loadingSliders = false;
@@ -1320,6 +1620,36 @@ void MainWindow::updateSpectrumForSelection()
     m_audioEngine.setSpectrumProcessId(feedSpectrum ? pid : 0UL);
     m_spectrumWidget->setEqActive(feedSpectrum);
     m_spectrumWidget->setActiveAppName(appName);
+}
+
+void MainWindow::applyEqStateToUi(const EqState &state)
+{
+    m_loadingSliders = true;
+    EqState applied = state;
+    // Advanced presets (any parametric filters) cannot run in Simple mode.
+    if (applied.filterCount > 0) {
+        applied.advanced = true;
+    }
+    syncEqModeCachesFromState(applied);
+    setEqUiModeAdvanced(applied.advanced, false);
+    if (applied.advanced && m_parametricPanel) {
+        m_parametricPanel->setEqState(applied);
+    } else if (m_parametricPanel && m_hasCachedAdvanced) {
+        m_parametricPanel->setEqState(m_cachedAdvancedEq);
+    }
+    applyGainsToSliders(applied.gainsDb);
+    m_loadingSliders = false;
+}
+
+EqState MainWindow::readEqState() const
+{
+    if (m_eqUiModeAdvanced && m_parametricPanel) {
+        return m_parametricPanel->eqState();
+    }
+    EqState state;
+    state.advanced = false;
+    state.gainsDb = readSliderGains();
+    return state;
 }
 
 std::array<float, EqProcessor::kBandCount> MainWindow::readSliderGains() const

@@ -34,9 +34,9 @@ EqSessionManager::EqSessionManager(AudioEngine *engine, SettingsStore *store, QO
     m_routingWatchdogTimer->start();
 }
 
-void EqSessionManager::setGainReader(std::function<std::array<float, EqProcessor::kBandCount>()> reader)
+void EqSessionManager::setEqStateReader(std::function<EqState()> reader)
 {
-    m_gainReader = std::move(reader);
+    m_eqStateReader = std::move(reader);
 }
 
 void EqSessionManager::setSurroundStateReader(std::function<VirtualSurroundSettings()> reader)
@@ -158,8 +158,8 @@ bool EqSessionManager::enableForProcess(unsigned long processId)
     }
 
     EqSessionSnapshot snapshot = m_snapshots.value(processId);
-    if (!snapshot.hasStoredGains && m_gainReader) {
-        snapshot.gains = m_gainReader();
+    if (!snapshot.hasStoredGains && m_eqStateReader) {
+        snapshot.eq = m_eqStateReader();
     }
     if (m_surroundStateReader) {
         snapshot.virtualSurround = m_surroundStateReader();
@@ -191,7 +191,7 @@ bool EqSessionManager::enableForProcess(unsigned long processId)
     const bool muteRoutingSink = m_store ? m_store->settings().muteRoutingSink : true;
 
     if (!m_engine->startSession(processId,
-                                snapshot.gains,
+                                snapshot.eq,
                                 snapshot.virtualSurround,
                                 snapshot.dynamicRange,
                                 outputDeviceId,
@@ -237,9 +237,8 @@ void EqSessionManager::disableForProcess(unsigned long processId)
         m_pendingGainPid = 0;
     }
 
-    if (m_gainReader) {
-        saveDraftForProcess(processId,
-                            m_gainReader(),
+    if (m_eqStateReader) {
+        saveDraftForProcess(processId, m_eqStateReader(),
                             m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{},
                             m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{});
     }
@@ -292,7 +291,7 @@ bool EqSessionManager::restoreForProcess(unsigned long processId)
 }
 
 void EqSessionManager::saveDraftForProcess(unsigned long processId,
-                                           const std::array<float, EqProcessor::kBandCount> &gains,
+                                           const EqState &eqState,
                                            const VirtualSurroundSettings &virtualSurround,
                                            const DynamicRangeSettings &dynamicRange)
 {
@@ -302,40 +301,40 @@ void EqSessionManager::saveDraftForProcess(unsigned long processId,
 
     EqSessionSnapshot snapshot = m_snapshots.value(processId);
     snapshot.processId = processId;
-    snapshot.gains = gains;
+    snapshot.eq = eqState;
     snapshot.virtualSurround = virtualSurround;
     snapshot.dynamicRange = dynamicRange;
     snapshot.hasStoredGains = true;
     m_snapshots.insert(processId, snapshot);
 
     if (snapshot.active) {
-        m_engine->setSessionGains(processId, gains);
+        m_engine->setSessionEqState(processId, eqState);
         m_engine->setSessionVirtualSurround(processId, virtualSurround);
         m_engine->setSessionDynamicRange(processId, dynamicRange);
     }
 }
 
 void EqSessionManager::applySnapshotToUi(unsigned long processId,
-                                           const std::function<void(const std::array<float, EqProcessor::kBandCount> &)> &applyGains,
+                                           const std::function<void(const EqState &)> &applyEq,
                                            const std::function<void(const VirtualSurroundSettings &)> &applySurround,
                                            const std::function<void(const DynamicRangeSettings &)> &applyDynamics) const
 {
     const EqSessionSnapshot snapshot = m_snapshots.value(processId);
     if (snapshot.hasStoredGains || snapshot.active) {
-        applyGains(snapshot.gains);
+        applyEq(snapshot.eq);
         applySurround(snapshot.virtualSurround);
         applyDynamics(snapshot.dynamicRange);
         return;
     }
 
-    applyGains({});
+    applyEq(EqState{});
     applySurround(VirtualSurroundSettings{});
     applyDynamics(DynamicRangeSettings{});
 }
 
 void EqSessionManager::pushLiveGainsForProcess(unsigned long processId)
 {
-    if (!m_gainReader || processId == 0) {
+    if (!m_eqStateReader || processId == 0) {
         return;
     }
     if (m_pendingGainPid == processId) {
@@ -343,19 +342,19 @@ void EqSessionManager::pushLiveGainsForProcess(unsigned long processId)
         m_pendingGainPid = 0;
     }
 
-    const auto gains = m_gainReader();
+    const EqState eqState = m_eqStateReader();
     const VirtualSurroundSettings virtualSurround =
         m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{};
     const DynamicRangeSettings dynamicRange =
         m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{};
     for (unsigned long pid : linkedProcessIds(processId)) {
-        saveDraftForProcess(pid, gains, virtualSurround, dynamicRange);
+        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange);
     }
 }
 
 void EqSessionManager::scheduleLiveGainsForProcess(unsigned long processId)
 {
-    if (!m_gainReader || processId == 0) {
+    if (!m_eqStateReader || processId == 0) {
         return;
     }
     m_pendingGainPid = processId;
@@ -367,16 +366,16 @@ void EqSessionManager::pushLiveSurroundForProcess(unsigned long processId)
     if (!m_surroundStateReader || processId == 0) {
         return;
     }
-    if (!m_gainReader) {
+    if (!m_eqStateReader) {
         return;
     }
 
-    const auto gains = m_gainReader();
+    const EqState eqState = m_eqStateReader();
     const VirtualSurroundSettings virtualSurround = m_surroundStateReader();
     const DynamicRangeSettings dynamicRange =
         m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{};
     for (unsigned long pid : linkedProcessIds(processId)) {
-        saveDraftForProcess(pid, gains, virtualSurround, dynamicRange);
+        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange);
     }
 }
 
@@ -385,16 +384,16 @@ void EqSessionManager::pushLiveDynamicsForProcess(unsigned long processId)
     if (!m_dynamicsStateReader || processId == 0) {
         return;
     }
-    if (!m_gainReader) {
+    if (!m_eqStateReader) {
         return;
     }
 
-    const auto gains = m_gainReader();
+    const EqState eqState = m_eqStateReader();
     const VirtualSurroundSettings virtualSurround =
         m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{};
     const DynamicRangeSettings dynamicRange = m_dynamicsStateReader();
     for (unsigned long pid : linkedProcessIds(processId)) {
-        saveDraftForProcess(pid, gains, virtualSurround, dynamicRange);
+        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange);
     }
 }
 

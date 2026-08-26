@@ -3,6 +3,7 @@
 #include "audiopipeline.h"
 #include "clocksync.h"
 #include "eqprocessor.h"
+#include "eqstate.h"
 #include "resampler.h"
 #include "spscringbuffer.h"
 #include "dynamicsprocessor.h"
@@ -24,7 +25,7 @@ class SpectrumCapture;
 
 struct SessionStartConfig {
     unsigned long processId = 0;
-    std::array<float, EqProcessor::kBandCount> gainsDb{};
+    EqState eqState{};
     VirtualSurroundSettings virtualSurround{};
     DynamicRangeSettings dynamicRange{};
     float mixSampleRate = 48000.f;
@@ -53,7 +54,7 @@ public:
 
     void maintainRouting();
 
-    void setGains(const std::array<float, EqProcessor::kBandCount> &gainsDb);
+    void setEqState(const EqState &eqState);
     void setVirtualSurroundSettings(const VirtualSurroundSettings &settings);
     void setDynamicRangeSettings(const DynamicRangeSettings &settings);
 

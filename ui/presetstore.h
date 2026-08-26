@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/eqprocessor.h"
+#include "audio/eqstate.h"
 
 #include <QJsonObject>
 #include <QString>
@@ -9,7 +10,7 @@
 struct EqPreset {
     QString id;
     QString name;
-    std::array<float, EqProcessor::kBandCount> gainsDb{};
+    EqState eq{};
     bool isBuiltIn = false;
 };
 
@@ -25,8 +26,7 @@ public:
     QVector<EqPreset> userPresets() const;
     QVector<EqPreset> allPresets() const;
 
-    bool addUserPreset(const QString &name, const std::array<float, EqProcessor::kBandCount> &gainsDb,
-                       EqPreset *createdPreset = nullptr);
+    bool addUserPreset(const QString &name, const EqState &eqState, EqPreset *createdPreset = nullptr);
     bool removeUserPreset(const QString &id);
     bool importFromFile(const QString &path, QString *errorMessage = nullptr);
     bool exportToFile(const QString &id, const QString &path, QString *errorMessage = nullptr) const;
@@ -38,6 +38,9 @@ private:
     static QVector<EqPreset> defaultBuiltIns();
     static QString makeUniqueName(const QString &baseName, const QVector<EqPreset> &existing);
     static bool parsePresetObject(const QJsonObject &object, EqPreset *preset, QString *errorMessage);
+    static QJsonObject toJsonObject(const EqPreset &preset);
+    static QString filterTypeToString(EqFilterType type);
+    static bool filterTypeFromString(const QString &text, EqFilterType *type);
 
     QVector<EqPreset> m_userPresets;
 };

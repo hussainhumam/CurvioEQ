@@ -141,17 +141,3 @@ bool SoundModStore::saveManifest(const QString &gameId, const QVector<SoundModMa
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     return true;
 }
-
-float SoundModStore::gainForRelativePath(const QString &gameId, const QString &relativePath) const
-{
-    QVector<SoundModProfileEntry> entries;
-    if (!loadProfile(gameId, &entries)) {
-        return 0.f;
-    }
-    for (const SoundModProfileEntry &entry : entries) {
-        if (entry.relativePath == relativePath) {
-            return entry.enabled ? entry.gainDb : 0.f;
-        }
-    }
-    return 0.f;
-}

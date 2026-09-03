@@ -50,6 +50,9 @@ void TrayController::setup()
 
     m_trayIcon->setContextMenu(m_trayMenu);
     connect(m_trayIcon, &QSystemTrayIcon::activated, this, &TrayController::onTrayActivated);
+    connect(m_trayIcon, &QSystemTrayIcon::messageClicked, this, [this]() {
+        emit updateRequested();
+    });
     m_trayIcon->show();
 }
 
@@ -105,6 +108,17 @@ void TrayController::showCriticalMessage(const QString &title, const QString &me
                                 QSystemTrayIcon::Critical,
                                 AppConstants::kTrayMessageDurationMs);
     }
+}
+
+void TrayController::showUpdateAvailableMessage(const QString &version)
+{
+    if (!m_trayIcon) {
+        return;
+    }
+    m_trayIcon->showMessage(QString::fromLatin1(AppConstants::kAppDisplayName),
+                            QStringLiteral("Version %1 is available. Click to install.").arg(version),
+                            QSystemTrayIcon::Information,
+                            AppConstants::kTrayMessageDurationMs);
 }
 
 void TrayController::onTrayActivated(QSystemTrayIcon::ActivationReason reason)

@@ -13,6 +13,7 @@
 #include "soundmods/patchengine.h"
 
 #include "soundmods/soundmodstore.h"
+#include "ui/slidervaluetip.h"
 
 
 
@@ -309,6 +310,10 @@ void SoundModDialog::buildUi()
     m_gainSlider->setRange(-240, 240);
 
     m_gainSlider->setValue(0);
+    installSliderValueTip(m_gainSlider, [](int value) {
+        const float gainDb = static_cast<float>(value) / 10.f;
+        return QStringLiteral("%1 dB").arg(gainDb, 0, 'f', 1);
+    });
 
     m_gainValueLabel = new QLabel(QStringLiteral("0.0 dB"), selectedGroup);
 

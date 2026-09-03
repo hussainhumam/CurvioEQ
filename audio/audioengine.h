@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audiochainorder.h"
 #include "eqprocessor.h"
 #include "eqstate.h"
 #include "virtualsurroundsettings.h"
@@ -41,8 +42,8 @@ public:
                       const EqState &eqState,
                       const VirtualSurroundSettings &virtualSurround,
                       const DynamicRangeSettings &dynamicRange,
+                      const AudioChainOrder &audioChainOrder,
                       const QString &eqOutputDeviceId,
-                      const QString &eqOutputDeviceName,
                       const QString &sinkDeviceId,
                       bool muteRoutingSink,
                       QString *errorMessage);
@@ -55,6 +56,7 @@ public:
     void setSessionEqState(unsigned long processId, const EqState &eqState);
     void setSessionVirtualSurround(unsigned long processId, const VirtualSurroundSettings &settings);
     void setSessionDynamicRange(unsigned long processId, const DynamicRangeSettings &settings);
+    void setSessionAudioChainOrder(unsigned long processId, const AudioChainOrder &order);
 
 signals:
     void statusChanged(const QString &message);
@@ -66,7 +68,7 @@ private slots:
 
 private:
     void mixerThreadMain();
-    bool ensureRendererOpen(const QString &eqOutputDeviceId, const QString &eqOutputDeviceName, QString *errorMessage);
+    bool ensureRendererOpen(const QString &eqOutputDeviceId, QString *errorMessage);
     void closeRenderer();
 
     SpectrumCapture *m_spectrumCapture = nullptr;
@@ -74,7 +76,6 @@ private:
 
     std::unique_ptr<WasapiRenderer> m_renderer;
     QString m_eqOutputDeviceId;
-    QString m_eqOutputDeviceName;
 
     mutable std::mutex m_sessionsMutex;
     std::vector<std::unique_ptr<EqAudioSession>> m_sessions;

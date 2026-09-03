@@ -144,6 +144,21 @@ bool SquiglinkCatalog::saveCache(const QVector<OnlinePresetProfile> &entries, QS
     return true;
 }
 
+bool SquiglinkCatalog::clearCache(QString *errorMessage)
+{
+    QFile file(cacheFilePath());
+    if (!file.exists()) {
+        return true;
+    }
+    if (!file.remove()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Could not delete Squiglink cache");
+        }
+        return false;
+    }
+    return true;
+}
+
 bool SquiglinkCatalog::parseSitesJson(const QByteArray &json,
                                       QVector<SquigSiteDb> *out,
                                       QString *errorMessage)
@@ -382,23 +397,4 @@ bool SquiglinkCatalog::parseMeasurementToAdvancedEq(const QString &text,
         state->advanced = true;
     }
     return true;
-}
-
-QVector<OnlinePresetProfile> SquiglinkCatalog::filter(const QVector<OnlinePresetProfile> &all,
-                                                      const QString &query)
-{
-    const QString needle = query.trimmed();
-    if (needle.isEmpty()) {
-        return all;
-    }
-    QVector<OnlinePresetProfile> matched;
-    for (const OnlinePresetProfile &profile : all) {
-        if (profile.name.contains(needle, Qt::CaseInsensitive)
-            || profile.source.contains(needle, Qt::CaseInsensitive)
-            || profile.dbType.contains(needle, Qt::CaseInsensitive)
-            || profile.fileBase.contains(needle, Qt::CaseInsensitive)) {
-            matched.push_back(profile);
-        }
-    }
-    return matched;
 }

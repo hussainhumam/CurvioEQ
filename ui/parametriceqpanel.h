@@ -21,6 +21,9 @@ public:
 
 signals:
     void eqChanged();
+    void eqEditStarted();
+    void eqEditEnded();
+    void resetRequested();
 
 public slots:
     void selectFilter(int index);
@@ -28,14 +31,16 @@ public slots:
 private slots:
     void onAddFilterRequested(float freqHz, float gainDb);
     void onRemoveFilterRequested(int index);
+    void onRemoveSelectedRequested();
     void onEditorChanged();
-    void onCurveMoved(int index, float freqHz, float gainDb);
+    void onFiltersMoved();
 
 private:
     void loadEditorFromSelection();
     void pushEditorToSelection();
     void emitChanged();
     int insertFilterSorted(const EqFilter &filter);
+    void removeFilterAt(int index);
     void clampSelection();
 
     EqCurveWidget *m_curve = nullptr;
@@ -47,4 +52,5 @@ private:
     EqState m_state{};
     int m_selectedIndex = -1;
     bool m_updating = false;
+    bool m_moveEditOpen = false;
 };

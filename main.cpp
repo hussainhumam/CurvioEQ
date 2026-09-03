@@ -112,9 +112,13 @@ int main(int argc, char *argv[])
         return routed ? 0 : 1;
     }
 
+    QCoreApplication::setOrganizationName(QString::fromLatin1(AppConstants::kAppId));
+    QCoreApplication::setApplicationName(QString::fromLatin1(AppConstants::kAppId));
+    QCoreApplication::setApplicationVersion(QString::fromLatin1(AppConstants::kAppVersion));
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QString::fromLatin1(AppConstants::kAppId));
     QCoreApplication::setApplicationName(QString::fromLatin1(AppConstants::kAppId));
+    QCoreApplication::setApplicationVersion(QString::fromLatin1(AppConstants::kAppVersion));
     QApplication::setWindowIcon(AppIconProvider::appIcon());
     QApplication::setQuitOnLastWindowClosed(false);
 

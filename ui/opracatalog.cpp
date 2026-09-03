@@ -193,6 +193,21 @@ bool OpraCatalog::saveCache(const QVector<OpraProfile> &entries, QString *errorM
     return true;
 }
 
+bool OpraCatalog::clearCache(QString *errorMessage)
+{
+    QFile file(cacheFilePath());
+    if (!file.exists()) {
+        return true;
+    }
+    if (!file.remove()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Could not delete OPRA cache");
+        }
+        return false;
+    }
+    return true;
+}
+
 bool OpraCatalog::parseDatabaseJsonl(const QByteArray &jsonl,
                                      QVector<OpraProfile> *out,
                                      QString *errorMessage)
@@ -395,34 +410,4 @@ OnlinePresetProfile OpraCatalog::toOnlineProfile(const OpraProfile &profile)
     online.relativePath = profile.id;
     online.dbType = QStringLiteral("OPRA");
     return online;
-}
-
-QVector<OnlinePresetProfile> OpraCatalog::toOnlineProfiles(const QVector<OpraProfile> &profiles)
-{
-    QVector<OnlinePresetProfile> out;
-    out.reserve(profiles.size());
-    for (const OpraProfile &profile : profiles) {
-        out.push_back(toOnlineProfile(profile));
-    }
-    return out;
-}
-
-QVector<OpraProfile> OpraCatalog::filter(const QVector<OpraProfile> &all, const QString &query)
-{
-    const QString needle = query.trimmed();
-    if (needle.isEmpty()) {
-        return all;
-    }
-
-    QVector<OpraProfile> matched;
-    matched.reserve(qMin(all.size(), qsizetype{512}));
-    for (const OpraProfile &profile : all) {
-        if (profile.name.contains(needle, Qt::CaseInsensitive)
-            || profile.author.contains(needle, Qt::CaseInsensitive)
-            || profile.details.contains(needle, Qt::CaseInsensitive)
-            || profile.id.contains(needle, Qt::CaseInsensitive)) {
-            matched.push_back(profile);
-        }
-    }
-    return matched;
 }

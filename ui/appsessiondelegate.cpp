@@ -1,17 +1,19 @@
 #include "appsessiondelegate.h"
 
+#include "sessionlistcontroller.h"
+
 #include <QApplication>
-#include <QColor>
 #include <QPainter>
-#include <QFontMetrics>
+#include <QStyle>
+#include <QStringList>
 
 namespace {
 constexpr int kRowHeight = 52;
 constexpr int kIconSize = 32;
 constexpr int kPadding = 8;
-constexpr int kBadgeDotRadius = 4;
-constexpr QColor kSelectionOverlay(128, 128, 128, 24);
-constexpr QColor kSelectionBorder(100, 100, 100, 60);
+constexpr int kDotRadius = 8;
+constexpr int kDotMargin = 10;
+constexpr int kRightGutter = kDotMargin + kDotRadius * 2 + 6;
 }
 
 AppSessionDelegate::AppSessionDelegate(QObject *parent)
@@ -26,108 +28,87 @@ void AppSessionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
         return;
     }
 
-    painter->save();
-    painter->setRenderHint(QPainter::Antialiasing);
-
     QStyleOptionViewItem opt(option);
     initStyleOption(&opt, index);
-    opt.showDecorationSelected = false;
-    opt.backgroundBrush = Qt::NoBrush;
-    opt.state &= ~QStyle::State_MouseOver;
-    opt.state &= ~QStyle::State_HasFocus;
+    opt.text.clear();
+    opt.icon = QIcon();
+    opt.features &= ~QStyleOptionViewItem::HasDisplay;
+    opt.features &= ~QStyleOptionViewItem::HasDecoration;
 
-    const QRect rowRect = opt.rect;
+    const QWidget *widget = opt.widget;
+    QStyle *style = widget ? widget->style() : QApplication::style();
+    style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
+
     const bool selected = opt.state.testFlag(QStyle::State_Selected);
-    const bool eqActive = index.data(RoleEqActive).toBool();
+    const bool eqActive = index.data(SessionListController::RoleEqActive).toBool();
+    const bool muted = index.data(SessionListController::RoleMuted).toBool();
+    const QIcon icon = index.data(Qt::DecorationRole).value<QIcon>();
+    const QString name = index.data(SessionListController::RoleDisplayName).toString();
+    const QString deviceName = index.data(SessionListController::RoleOutputDeviceName).toString();
+    const qulonglong pid = index.data(SessionListController::RoleProcessId).toULongLong();
 
-    painter->fillRect(rowRect, opt.palette.window().color());
-
-    if (selected && !eqActive) {
-        painter->setCompositionMode(QPainter::CompositionMode_SourceOver);
-        painter->fillRect(rowRect, kSelectionOverlay);
+    QStringList statusParts;
+    statusParts.append(deviceName.isEmpty() ? QStringLiteral("PID %1").arg(pid) : deviceName);
+    if (eqActive) {
+        statusParts.append(QStringLiteral("EQ enabled"));
     }
+    if (muted) {
+        statusParts.append(QStringLiteral("muted"));
+    }
+    const QString status = statusParts.join(QStringLiteral(" - "));
 
-    const QIcon icon = index.data(RoleIcon).value<QIcon>();
-    const QString name = index.data(Qt::DisplayRole).toString();
-    const QString deviceName = index.data(RoleOutputDeviceName).toString();
-    const qulonglong pid = index.data(RoleProcessId).toULongLong();
+    const QRect rowRect = option.rect;
+    const int contentRight = eqActive ? rowRect.right() - kRightGutter : rowRect.right() - kPadding;
 
     const int iconX = rowRect.left() + kPadding;
     const int iconY = rowRect.top() + (rowRect.height() - kIconSize) / 2;
+    const QRect iconRect(iconX, iconY, kIconSize, kIconSize);
     if (!icon.isNull()) {
-        icon.paint(painter, QRect(iconX, iconY, kIconSize, kIconSize));
-    } else {
-        painter->setPen(Qt::gray);
-        painter->drawRect(QRect(iconX, iconY, kIconSize, kIconSize));
-        painter->drawText(QRect(iconX, iconY, kIconSize, kIconSize),
-                          Qt::AlignCenter, QStringLiteral("?"));
+        icon.paint(painter, iconRect);
     }
 
     const int textLeft = iconX + kIconSize + kPadding;
-    const int textWidth = rowRect.right() - textLeft - kPadding;
+    const int textWidth = qMax(0, contentRight - textLeft);
+
+    const QPalette::ColorRole textRole = selected ? QPalette::HighlightedText : QPalette::Text;
+    const QPalette::ColorRole statusRole = selected ? QPalette::HighlightedText : QPalette::PlaceholderText;
 
     QFont nameFont = opt.font;
     nameFont.setBold(true);
+    nameFont.setPointSize(opt.font.pointSize() + 2);
     painter->setFont(nameFont);
-    painter->setPen(opt.palette.text().color());
+    painter->setPen(opt.palette.color(textRole));
 
-    const QRect nameRect(textLeft, rowRect.top() + 6, textWidth, 20);
+    const QRect nameRect(textLeft, rowRect.top() + 6, textWidth, 22);
     painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(name, Qt::ElideRight, textWidth));
 
-    QFont pidFont = opt.font;
-    pidFont.setPointSize(opt.font.pointSize() - 1);
-    painter->setFont(pidFont);
-    painter->setPen(opt.palette.color(QPalette::Disabled, QPalette::Text));
+    QFont statusFont = opt.font;
+    painter->setFont(statusFont);
+    painter->setPen(opt.palette.color(statusRole));
+    const QRect statusRect(textLeft, rowRect.top() + 28, textWidth, 18);
+    painter->drawText(statusRect, Qt::AlignLeft | Qt::AlignVCenter,
+                      painter->fontMetrics().elidedText(status, Qt::ElideRight, textWidth));
 
-    const QString sublineText = deviceName.isEmpty()
-        ? QStringLiteral("PID %1").arg(pid)
-        : deviceName;
-    const QRect pidRect(textLeft, rowRect.top() + 26, textWidth, 18);
-    painter->drawText(pidRect, Qt::AlignLeft | Qt::AlignVCenter,
-                      painter->fontMetrics().elidedText(sublineText, Qt::ElideRight, textWidth));
-
-    if (eqActive) {
-        const QColor eqColor = index.data(RoleEqColor).value<QColor>();
-        const QColor badgeColor = eqColor.isValid() ? eqColor : QColor(70, 130, 220);
-
-        const int stripeWidth = 4;
-        painter->setBrush(badgeColor);
-        painter->setPen(Qt::NoPen);
-        painter->drawRect(QRect(rowRect.left(), rowRect.top(), stripeWidth, rowRect.height()));
-
-        const QString badgeText = QStringLiteral("EQ");
-        QFont badgeFont = opt.font;
-        badgeFont.setBold(true);
-        badgeFont.setPointSize(opt.font.pointSize() - 1);
-        painter->setFont(badgeFont);
-
-        const QFontMetrics badgeMetrics(badgeFont);
-        const int badgeWidth = badgeMetrics.horizontalAdvance(badgeText) + kBadgeDotRadius * 2 + 6;
-        const int badgeHeight = badgeMetrics.height() + 4;
-        const int badgeX = rowRect.right() - kPadding - badgeWidth;
-        const int badgeY = rowRect.top() + (rowRect.height() - badgeHeight) / 2;
-
-        const int dotX = badgeX + kBadgeDotRadius + 2;
-        const int dotY = badgeY + badgeHeight / 2;
-        painter->setBrush(badgeColor);
-        painter->drawEllipse(QPoint(dotX, dotY), kBadgeDotRadius, kBadgeDotRadius);
-
-        painter->setPen(badgeColor);
-        painter->drawText(QRect(badgeX + kBadgeDotRadius * 2 + 4, badgeY, badgeWidth, badgeHeight),
-                          Qt::AlignLeft | Qt::AlignVCenter, badgeText);
+    if (!eqActive) {
+        return;
     }
 
-    if (selected) {
-        painter->setPen(kSelectionBorder);
-        painter->drawRect(rowRect.adjusted(0, 0, -1, -1));
+    QColor color = index.data(SessionListController::RoleEqColor).value<QColor>();
+    if (!color.isValid()) {
+        color = QColor(70, 130, 220);
     }
 
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(color);
+    const QPoint center(rowRect.right() - kDotMargin - kDotRadius, rowRect.center().y());
+    painter->drawEllipse(center, kDotRadius, kDotRadius);
     painter->restore();
 }
 
-QSize AppSessionDelegate::sizeHint(const QStyleOptionViewItem &option,
-                                   const QModelIndex &index) const
+QSize AppSessionDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
     Q_UNUSED(option)
     Q_UNUSED(index)

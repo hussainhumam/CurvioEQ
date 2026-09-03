@@ -39,6 +39,7 @@ public:
 
     static bool loadCache(QVector<OnlinePresetProfile> *out, QString *errorMessage = nullptr);
     static bool saveCache(const QVector<OnlinePresetProfile> &entries, QString *errorMessage = nullptr);
+    static bool clearCache(QString *errorMessage = nullptr);
 
     static bool parseSitesJson(const QByteArray &json,
                                QVector<SquigSiteDb> *out,
@@ -60,7 +61,4 @@ public:
     static bool parseMeasurementToAdvancedEq(const QString &text,
                                              EqState *state,
                                              QString *errorMessage = nullptr);
-
-    static QVector<OnlinePresetProfile> filter(const QVector<OnlinePresetProfile> &all,
-                                               const QString &query);
 };

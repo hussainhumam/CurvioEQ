@@ -9,6 +9,7 @@ struct AudioSessionInfo {
     QString sessionId;
     QString deviceId;
     QString deviceName;
+    bool muted = false;
 };
 
 class AudioSessionEnumerator

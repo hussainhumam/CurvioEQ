@@ -31,6 +31,7 @@ private slots:
     void onSearchTextChanged(const QString &text);
     void onSourceFilterChanged(int);
     void onRefreshClicked();
+    void onRedownloadClicked();
     void onImportClicked();
     void onSelectionChanged();
     void onNetworkFinished();
@@ -66,6 +67,7 @@ private:
     void addProfileItem(const OnlinePresetProfile &profile);
     void updateListStatus();
     void loadCaches();
+    int matchingCount() const;
     void startRefresh();
     void startOpraDownload();
     void startSquigRefresh();
@@ -86,7 +88,6 @@ private:
     const OpraProfile *findOpraProfile(const QString &id) const;
     OnlinePresetProfile selectedProfile() const;
     SourceFilter currentFilter() const;
-    QVector<OnlinePresetProfile> mergedProfiles() const;
 
     PresetStore *m_store = nullptr;
     QNetworkAccessManager *m_nam = nullptr;
@@ -98,6 +99,7 @@ private:
     QListWidget *m_listWidget = nullptr;
     QPushButton *m_importButton = nullptr;
     QPushButton *m_refreshButton = nullptr;
+    QPushButton *m_redownloadButton = nullptr;
     QPushButton *m_closeButton = nullptr;
     QLabel *m_statusLabel = nullptr;
     QLabel *m_creditLabel = nullptr;
@@ -106,8 +108,12 @@ private:
     QVector<AutoEqProfile> m_autoEqProfiles;
     QVector<OnlinePresetProfile> m_squigProfiles;
     QVector<OpraProfile> m_opraProfiles;
-    QVector<OnlinePresetProfile> m_filteredProfiles;
+    int m_scanAutoEq = 0;
+    int m_scanSquig = 0;
+    int m_scanOpra = 0;
     int m_visibleCount = 0;
+    int m_matchTotal = 0;
+    bool m_hasMore = false;
     bool m_loadingPage = false;
 
     QVector<SquigSiteDb> m_squigQueue;

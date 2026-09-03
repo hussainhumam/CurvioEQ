@@ -4,6 +4,7 @@
 #include "appconstants.h"
 #include "audio/surroundprocessor.h"
 #include "audio/dynamicrangesettings.h"
+#include "audio/audiochainorder.h"
 #include "eqcolorpalette.h"
 
 #include <algorithm>
@@ -48,7 +49,16 @@ bool SettingsStore::load()
     const QJsonObject root = doc.object();
     const int version = root.value(QStringLiteral("version")).toInt(1);
     m_settings.startWithWindows = root.value(QStringLiteral("startWithWindows")).toBool(false);
-    m_settings.setupCompleted = root.value(QStringLiteral("setupCompleted")).toBool(false);
+    {
+        const QJsonValue setupValue = root.value(QStringLiteral("setupCompleted"));
+        if (setupValue.isBool()) {
+            m_settings.setupCompleted = setupValue.toBool();
+        } else if (setupValue.isDouble()) {
+            m_settings.setupCompleted = setupValue.toInt() != 0;
+        } else {
+            m_settings.setupCompleted = false;
+        }
+    }
     m_settings.muteRoutingSink = root.value(QStringLiteral("muteRoutingSink")).toBool(true);
     m_settings.routingSinkDeviceId = root.value(QStringLiteral("routingSinkDeviceId")).toString();
     m_settings.routingSinkDeviceName = root.value(QStringLiteral("routingSinkDeviceName")).toString();
@@ -62,6 +72,25 @@ bool SettingsStore::load()
         clampDynamicRangeAmount(root.value(QStringLiteral("dynamicsAmount")).toInt(DynamicRangeSettings::kAmountDefault));
     m_settings.dynamicsLoudnessAmount = clampLoudnessAmount(
         root.value(QStringLiteral("dynamicsLoudnessAmount")).toInt(DynamicRangeSettings::kLoudnessDefault));
+    {
+        AudioChainOrder loaded = defaultAudioChainOrder();
+        const QJsonArray chain = root.value(QStringLiteral("audioChainOrder")).toArray();
+        if (chain.size() == kAudioChainStageCount) {
+            bool ok = true;
+            for (int i = 0; i < kAudioChainStageCount; ++i) {
+                AudioChainStage stage = AudioChainStage::Eq;
+                const QByteArray id = chain.at(i).toString().toUtf8();
+                if (!audioChainStageFromId(id.constData(), &stage)) {
+                    ok = false;
+                    break;
+                }
+                loaded.stages[static_cast<size_t>(i)] = stage;
+            }
+            if (ok) {
+                m_settings.audioChainOrder = normalizeAudioChainOrder(loaded);
+            }
+        }
+    }
     m_settings.spectrumEnabled = root.value(QStringLiteral("spectrumEnabled")).toBool(true);
     m_settings.eqUiModeAdvanced = root.value(QStringLiteral("eqUiModeAdvanced")).toBool(false);
     m_settings.keybindsEnabled = root.value(QStringLiteral("keybindsEnabled")).toBool(false);
@@ -89,6 +118,13 @@ bool SettingsStore::load()
         m_settings.surroundChannelLevels[static_cast<size_t>(SurroundProcessor::Lfe)] = 0;
     }
 
+    m_settings.lastShownChangelogVersion = root.value(QStringLiteral("lastShownChangelogVersion")).toString();
+
+    if (!m_settings.setupCompleted && !m_settings.routingSinkDeviceId.isEmpty()
+        && !m_settings.eqOutputDeviceId.isEmpty()) {
+        m_settings.setupCompleted = true;
+    }
+
     return true;
 }
 
@@ -98,7 +134,7 @@ bool SettingsStore::save() const
     QDir().mkpath(QFileInfo(path).absolutePath());
 
     QJsonObject root;
-    root.insert(QStringLiteral("version"), 7);
+    root.insert(QStringLiteral("version"), 8);
     root.insert(QStringLiteral("startWithWindows"), m_settings.startWithWindows);
     root.insert(QStringLiteral("setupCompleted"), m_settings.setupCompleted);
     root.insert(QStringLiteral("muteRoutingSink"), m_settings.muteRoutingSink);
@@ -112,6 +148,12 @@ bool SettingsStore::save() const
     root.insert(QStringLiteral("dynamicsEnabled"), m_settings.dynamicsEnabled);
     root.insert(QStringLiteral("dynamicsAmount"), m_settings.dynamicsAmount);
     root.insert(QStringLiteral("dynamicsLoudnessAmount"), m_settings.dynamicsLoudnessAmount);
+    QJsonArray audioChainOrder;
+    const AudioChainOrder chain = normalizeAudioChainOrder(m_settings.audioChainOrder);
+    for (AudioChainStage stage : chain.stages) {
+        audioChainOrder.append(QString::fromLatin1(audioChainStageId(stage)));
+    }
+    root.insert(QStringLiteral("audioChainOrder"), audioChainOrder);
     root.insert(QStringLiteral("spectrumEnabled"), m_settings.spectrumEnabled);
     root.insert(QStringLiteral("eqUiModeAdvanced"), m_settings.eqUiModeAdvanced);
     root.insert(QStringLiteral("keybindsEnabled"), m_settings.keybindsEnabled);
@@ -129,6 +171,7 @@ bool SettingsStore::save() const
         levels.append(level);
     }
     root.insert(QStringLiteral("surroundChannelLevels"), levels);
+    root.insert(QStringLiteral("lastShownChangelogVersion"), m_settings.lastShownChangelogVersion);
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

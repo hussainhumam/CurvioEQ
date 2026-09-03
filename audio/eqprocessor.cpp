@@ -100,11 +100,6 @@ void EqProcessor::setGains(const std::array<float, kBandCount> &gainsDb)
     }
 }
 
-void EqProcessor::setAdvancedMode(bool advanced)
-{
-    m_advanced.store(advanced, std::memory_order_release);
-}
-
 void EqProcessor::setParametricFilters(const EqFilter *filters, int count)
 {
     m_advanced.store(true, std::memory_order_release);

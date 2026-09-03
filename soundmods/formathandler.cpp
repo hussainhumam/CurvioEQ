@@ -28,13 +28,6 @@ FormatHandlerRegistry &FormatHandlerRegistry::instance()
     return registry;
 }
 
-void FormatHandlerRegistry::registerHandler(const IFormatHandler *handler)
-{
-    if (handler) {
-        m_handlers.push_back(handler);
-    }
-}
-
 const IFormatHandler *FormatHandlerRegistry::handlerForPath(const QString &absolutePath) const
 {
     const QString extension = QFileInfo(absolutePath).suffix();
@@ -44,14 +37,4 @@ const IFormatHandler *FormatHandlerRegistry::handlerForPath(const QString &absol
         }
     }
     return nullptr;
-}
-
-SoundAssetFormat FormatHandlerRegistry::formatForExtension(const QString &extension) const
-{
-    for (const IFormatHandler *handler : m_handlers) {
-        if (handler && handler->matchesExtension(extension)) {
-            return handler->format();
-        }
-    }
-    return SoundAssetFormat::Unknown;
 }

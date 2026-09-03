@@ -10,6 +10,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <vector>
 
 ParametricEqPanel::ParametricEqPanel(QWidget *parent)
     : QWidget(parent)
@@ -57,9 +58,18 @@ ParametricEqPanel::ParametricEqPanel(QWidget *parent)
     connect(m_gainSpin, &QDoubleSpinBox::valueChanged, this, &ParametricEqPanel::onEditorChanged);
     connect(m_qSpin, &QDoubleSpinBox::valueChanged, this, &ParametricEqPanel::onEditorChanged);
     connect(m_curve, &EqCurveWidget::filterSelected, this, &ParametricEqPanel::selectFilter);
-    connect(m_curve, &EqCurveWidget::filterMoved, this, &ParametricEqPanel::onCurveMoved);
+    connect(m_curve, &EqCurveWidget::filtersMoved, this, &ParametricEqPanel::onFiltersMoved);
+    connect(m_curve, &EqCurveWidget::filtersMoveFinished, this, [this]() {
+        if (!m_moveEditOpen) {
+            return;
+        }
+        m_moveEditOpen = false;
+        emit eqEditEnded();
+    });
     connect(m_curve, &EqCurveWidget::addFilterRequested, this, &ParametricEqPanel::onAddFilterRequested);
     connect(m_curve, &EqCurveWidget::removeFilterRequested, this, &ParametricEqPanel::onRemoveFilterRequested);
+    connect(m_curve, &EqCurveWidget::removeSelectedRequested, this, &ParametricEqPanel::onRemoveSelectedRequested);
+    connect(m_curve, &EqCurveWidget::resetRequested, this, &ParametricEqPanel::resetRequested);
 
     m_state.advanced = true;
 }
@@ -86,20 +96,21 @@ EqState ParametricEqPanel::eqState() const
 
 void ParametricEqPanel::clampSelection()
 {
-    if (m_state.filterCount <= 0) {
+    if (m_state.filterCount <= 0 || m_selectedIndex < 0) {
         m_selectedIndex = -1;
-    } else if (m_selectedIndex < 0 || m_selectedIndex >= m_state.filterCount) {
-        m_selectedIndex = std::clamp(m_selectedIndex, 0, m_state.filterCount - 1);
+        return;
+    }
+    if (m_selectedIndex >= m_state.filterCount) {
+        m_selectedIndex = m_state.filterCount - 1;
     }
 }
 
 void ParametricEqPanel::selectFilter(int index)
 {
-    if (index < 0 || index >= m_state.filterCount) {
+    if (index >= m_state.filterCount) {
         return;
     }
-    m_selectedIndex = index;
-    m_curve->setSelectedIndex(index);
+    m_selectedIndex = index < 0 ? -1 : index;
     loadEditorFromSelection();
 }
 
@@ -130,12 +141,15 @@ void ParametricEqPanel::onAddFilterRequested(float freqHz, float gainDb)
     filter.freqHz = freqHz;
     filter.gainDb = gainDb;
     filter.q = EqResponse::kDefaultQ;
+    emit eqEditStarted();
     m_selectedIndex = insertFilterSorted(filter);
     emitChanged();
+    m_curve->setSelectedIndex(m_selectedIndex);
     loadEditorFromSelection();
+    emit eqEditEnded();
 }
 
-void ParametricEqPanel::onRemoveFilterRequested(int index)
+void ParametricEqPanel::removeFilterAt(int index)
 {
     if (index < 0 || index >= m_state.filterCount) {
         return;
@@ -144,6 +158,15 @@ void ParametricEqPanel::onRemoveFilterRequested(int index)
         m_state.filters[static_cast<size_t>(i)] = m_state.filters[static_cast<size_t>(i + 1)];
     }
     --m_state.filterCount;
+}
+
+void ParametricEqPanel::onRemoveFilterRequested(int index)
+{
+    if (index < 0 || index >= m_state.filterCount) {
+        return;
+    }
+    emit eqEditStarted();
+    removeFilterAt(index);
     if (m_state.filterCount <= 0) {
         m_selectedIndex = -1;
     } else if (m_selectedIndex >= m_state.filterCount) {
@@ -154,7 +177,27 @@ void ParametricEqPanel::onRemoveFilterRequested(int index)
         m_selectedIndex = std::min(index, m_state.filterCount - 1);
     }
     emitChanged();
+    m_curve->setSelectedIndex(m_selectedIndex);
     loadEditorFromSelection();
+    emit eqEditEnded();
+}
+
+void ParametricEqPanel::onRemoveSelectedRequested()
+{
+    std::vector<int> indices = m_curve->selectedIndices();
+    if (indices.empty()) {
+        return;
+    }
+    emit eqEditStarted();
+    std::sort(indices.begin(), indices.end());
+    for (auto it = indices.rbegin(); it != indices.rend(); ++it) {
+        removeFilterAt(*it);
+    }
+    m_selectedIndex = -1;
+    emitChanged();
+    m_curve->setSelectedIndex(-1);
+    loadEditorFromSelection();
+    emit eqEditEnded();
 }
 
 void ParametricEqPanel::onEditorChanged()
@@ -162,22 +205,31 @@ void ParametricEqPanel::onEditorChanged()
     if (m_updating) {
         return;
     }
+    emit eqEditStarted();
     pushEditorToSelection();
     emitChanged();
+    emit eqEditEnded();
 }
 
-void ParametricEqPanel::onCurveMoved(int index, float freqHz, float gainDb)
+void ParametricEqPanel::onFiltersMoved()
 {
-    if (index < 0 || index >= m_state.filterCount) {
+    const int count = m_curve->filterCount();
+    if (count != m_state.filterCount) {
         return;
     }
+    if (!m_moveEditOpen) {
+        emit eqEditStarted();
+        m_moveEditOpen = true;
+    }
     m_updating = true;
-    m_state.filters[static_cast<size_t>(index)].freqHz = freqHz;
-    m_state.filters[static_cast<size_t>(index)].gainDb = gainDb;
-    m_selectedIndex = index;
-    if (m_selectedIndex == index) {
-        m_freqSpin->setValue(freqHz);
-        m_gainSpin->setValue(gainDb);
+    for (int i = 0; i < count; ++i) {
+        m_state.filters[static_cast<size_t>(i)] = m_curve->filterAt(i);
+    }
+    m_selectedIndex = m_curve->selectedIndex();
+    if (m_selectedIndex >= 0 && m_selectedIndex < m_state.filterCount) {
+        const EqFilter &filter = m_state.filters[static_cast<size_t>(m_selectedIndex)];
+        m_freqSpin->setValue(filter.freqHz);
+        m_gainSpin->setValue(filter.gainDb);
     }
     m_updating = false;
     emitChanged();
@@ -227,6 +279,5 @@ void ParametricEqPanel::emitChanged()
     m_state.advanced = true;
     clampSelection();
     m_curve->setFilters(m_state.filters.data(), m_state.filterCount);
-    m_curve->setSelectedIndex(m_selectedIndex);
     emit eqChanged();
 }

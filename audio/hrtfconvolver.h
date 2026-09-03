@@ -8,7 +8,6 @@ public:
     void configure(const float *irLeft, const float *irRight, int irLength, int blockSize);
     void reset();
 
-    int blockSize() const { return m_blockSize; }
     int latencyFrames() const { return m_irLength > 0 ? m_irLength - 1 : 0; }
 
     void processAccumulate(const float *monoInput, float *stereoOutput, int frameCount);

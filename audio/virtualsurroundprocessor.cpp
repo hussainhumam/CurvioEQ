@@ -11,7 +11,6 @@
 
 namespace {
 
-constexpr float kLfeCrossoverHz = 120.f;
 constexpr float kSpatialCrossoverHz = 250.f;
 constexpr float kWetOutputCrossoverHz = 400.f;
 
@@ -51,33 +50,6 @@ void VirtualSurroundProcessor::configureCrossoverFilters()
     configureHighPass(&m_wetHighPassRight, m_sampleRate, kWetOutputCrossoverHz);
     configureHighPass(&m_wetHighPassLeft2, m_sampleRate, kWetOutputCrossoverHz);
     configureHighPass(&m_wetHighPassRight2, m_sampleRate, kWetOutputCrossoverHz);
-    configureLfeLowPass();
-}
-
-void VirtualSurroundProcessor::configureLowPass(BiquadState *filter, float sampleRate, float cutoffHz)
-{
-    if (!filter || sampleRate <= 0.f || cutoffHz <= 0.f) {
-        return;
-    }
-
-    const float omega = 2.f * 3.14159265358979323846f * cutoffHz / sampleRate;
-    const float sinOmega = std::sin(omega);
-    const float cosOmega = std::cos(omega);
-    const float alpha = sinOmega / (2.f * 0.70710678f);
-
-    const float b0 = (1.f - cosOmega) * 0.5f;
-    const float b1 = 1.f - cosOmega;
-    const float b2 = (1.f - cosOmega) * 0.5f;
-    const float a0 = 1.f + alpha;
-    const float a1 = -2.f * cosOmega;
-    const float a2 = 1.f - alpha;
-
-    filter->b0 = b0 / a0;
-    filter->b1 = b1 / a0;
-    filter->b2 = b2 / a0;
-    filter->a1 = a1 / a0;
-    filter->a2 = a2 / a0;
-    filter->reset();
 }
 
 float VirtualSurroundProcessor::BiquadState::process(float input)
@@ -148,11 +120,6 @@ void VirtualSurroundProcessor::setSampleRate(float sampleRate)
     }
 }
 
-void VirtualSurroundProcessor::configureLfeLowPass()
-{
-    configureLowPass(&m_lfeLowPass, m_sampleRate, kLfeCrossoverHz);
-}
-
 int VirtualSurroundProcessor::latencyFrames() const
 {
     int maxLatency = 0;
@@ -211,7 +178,6 @@ void VirtualSurroundProcessor::ensureConfigured()
         m_convolvers[static_cast<size_t>(channel)].reset();
     }
 
-    m_lfeLowPass.reset();
     m_spatialHighPassLeft.reset();
     m_spatialHighPassRight.reset();
     m_wetHighPassLeft.reset();

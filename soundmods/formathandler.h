@@ -23,9 +23,7 @@ class FormatHandlerRegistry
 public:
     static FormatHandlerRegistry &instance();
 
-    void registerHandler(const IFormatHandler *handler);
     const IFormatHandler *handlerForPath(const QString &absolutePath) const;
-    SoundAssetFormat formatForExtension(const QString &extension) const;
 
 private:
     FormatHandlerRegistry();

@@ -99,6 +99,7 @@ bool EqAudioSession::start(SessionStartConfig config, QString *errorMessage)
     m_onThreadFinished = std::move(config.onThreadFinished);
     m_routingApplied = false;
 
+    m_audioChainPacked.store(packAudioChainOrder(config.audioChainOrder), std::memory_order_release);
     m_eqProcessor.setEqState(config.eqState);
     m_virtualSurroundProcessor.setEnabled(config.virtualSurround.enabled);
     m_virtualSurroundProcessor.setPreset(config.virtualSurround.presetId);
@@ -261,6 +262,11 @@ void EqAudioSession::setDynamicRangeSettings(const DynamicRangeSettings &setting
     m_loudnessProcessor.setAmount(settings.loudnessAmount);
 }
 
+void EqAudioSession::setAudioChainOrder(const AudioChainOrder &order)
+{
+    m_audioChainPacked.store(packAudioChainOrder(order), std::memory_order_release);
+}
+
 void EqAudioSession::processCaptureChunk(CaptureBuffers *buffers, int framesRead)
 {
     if (!buffers || framesRead <= 0 || !m_ringBuffer) {
@@ -278,24 +284,34 @@ void EqAudioSession::processCaptureChunk(CaptureBuffers *buffers, int framesRead
                     static_cast<size_t>(framesRead * channelCount) * sizeof(float));
     }
 
-    m_pipeline.process(buffers->capture.data(), framesRead, channelCount);
-
     float *writeBuffer = buffers->capture.data();
     int writeChannelCount = channelCount;
     int framesToWrite = framesRead;
 
-    if (m_virtualSurroundProcessor.isEnabled()) {
-        m_virtualSurroundProcessor.process(buffers->capture.data(), buffers->virtualSurround.data(), framesRead);
-        writeBuffer = buffers->virtualSurround.data();
-        writeChannelCount = 2;
-    }
-
-    if (m_dynamicsProcessor.isEnabled()) {
-        m_dynamicsProcessor.process(writeBuffer, framesRead, writeChannelCount);
-    }
-
-    if (m_loudnessProcessor.isEnabled()) {
-        m_loudnessProcessor.process(writeBuffer, framesRead, writeChannelCount);
+    const AudioChainOrder order = unpackAudioChainOrder(m_audioChainPacked.load(std::memory_order_acquire));
+    for (AudioChainStage stage : order.stages) {
+        switch (stage) {
+        case AudioChainStage::Eq:
+            m_eqProcessor.process(writeBuffer, framesRead, writeChannelCount);
+            break;
+        case AudioChainStage::VirtualSurround:
+            if (m_virtualSurroundProcessor.isEnabled()) {
+                m_virtualSurroundProcessor.process(writeBuffer, buffers->virtualSurround.data(), framesRead);
+                writeBuffer = buffers->virtualSurround.data();
+                writeChannelCount = 2;
+            }
+            break;
+        case AudioChainStage::Dynamics:
+            if (m_dynamicsProcessor.isEnabled()) {
+                m_dynamicsProcessor.process(writeBuffer, framesRead, writeChannelCount);
+            }
+            break;
+        case AudioChainStage::Loudness:
+            if (m_loudnessProcessor.isEnabled()) {
+                m_loudnessProcessor.process(writeBuffer, framesRead, writeChannelCount);
+            }
+            break;
+        }
     }
 
     if (feedSpectrumThisChunk) {

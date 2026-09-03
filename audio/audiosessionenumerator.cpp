@@ -141,6 +141,17 @@ void enumerateDeviceSessions(IMMDevice *device,
         info.deviceId = deviceId;
         info.deviceName = deviceName;
 
+        ISimpleAudioVolume *simpleVolume = nullptr;
+        if (SUCCEEDED(sessionControl2->QueryInterface(__uuidof(ISimpleAudioVolume),
+                                                      reinterpret_cast<void **>(&simpleVolume)))
+            && simpleVolume) {
+            BOOL muted = FALSE;
+            if (SUCCEEDED(simpleVolume->GetMute(&muted))) {
+                info.muted = muted == TRUE;
+            }
+            simpleVolume->Release();
+        }
+
         if (!isUsableSessionDisplayName(info.displayName)) {
             info.displayName = AppIconProvider::displayNameForProcess(processId);
         }

@@ -6,6 +6,7 @@
 #include "eqstate.h"
 #include "resampler.h"
 #include "spscringbuffer.h"
+#include "audiochainorder.h"
 #include "dynamicsprocessor.h"
 #include "dynamicrangesettings.h"
 #include "loudnessprocessor.h"
@@ -28,6 +29,7 @@ struct SessionStartConfig {
     EqState eqState{};
     VirtualSurroundSettings virtualSurround{};
     DynamicRangeSettings dynamicRange{};
+    AudioChainOrder audioChainOrder{};
     float mixSampleRate = 48000.f;
     int mixChannelCount = 2;
     QString sinkDeviceId;
@@ -57,6 +59,7 @@ public:
     void setEqState(const EqState &eqState);
     void setVirtualSurroundSettings(const VirtualSurroundSettings &settings);
     void setDynamicRangeSettings(const DynamicRangeSettings &settings);
+    void setAudioChainOrder(const AudioChainOrder &order);
 
     QString sinkDeviceId() const { return m_sinkDeviceId; }
     int routedProcessCount() const { return m_routedProcessCount; }
@@ -100,6 +103,7 @@ private:
     SpectrumCapture *m_spectrumCapture = nullptr;
     std::atomic<unsigned long> *m_spectrumProcessId = nullptr;
 
+    std::atomic<uint32_t> m_audioChainPacked{packAudioChainOrder(defaultAudioChainOrder())};
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stopRequested{false};
     std::function<void(unsigned long processId, const QString &errorMessage)> m_onThreadFinished;

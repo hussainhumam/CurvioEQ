@@ -1,103 +1,16 @@
 #include "globalhotkeymanager.h"
 
+#include "hotkeysequence.h"
+
 #include <QApplication>
-#include <QKeySequence>
+#include <QTimer>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-namespace {
-
-bool sequenceToNative(const QKeySequence &sequence, UINT *modifiers, UINT *virtualKey)
-{
-    if (sequence.isEmpty()) {
-        return false;
-    }
-
-    const QKeyCombination combo = sequence[0];
-    const Qt::KeyboardModifiers qtModifiers = combo.keyboardModifiers();
-    const int qtKey = combo.key();
-
-    UINT nativeModifiers = 0;
-    if (qtModifiers.testFlag(Qt::ShiftModifier)) {
-        nativeModifiers |= MOD_SHIFT;
-    }
-    if (qtModifiers.testFlag(Qt::ControlModifier)) {
-        nativeModifiers |= MOD_CONTROL;
-    }
-    if (qtModifiers.testFlag(Qt::AltModifier)) {
-        nativeModifiers |= MOD_ALT;
-    }
-    if (qtModifiers.testFlag(Qt::MetaModifier)) {
-        nativeModifiers |= MOD_WIN;
-    }
-
-    UINT vk = 0;
-    if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z) {
-        vk = static_cast<UINT>('A' + (qtKey - Qt::Key_A));
-    } else if (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9) {
-        vk = static_cast<UINT>('0' + (qtKey - Qt::Key_0));
-    } else if (qtKey >= Qt::Key_F1 && qtKey <= Qt::Key_F24) {
-        vk = static_cast<UINT>(VK_F1 + (qtKey - Qt::Key_F1));
-    } else {
-        switch (qtKey) {
-        case Qt::Key_Space:
-            vk = VK_SPACE;
-            break;
-        case Qt::Key_Return:
-        case Qt::Key_Enter:
-            vk = VK_RETURN;
-            break;
-        case Qt::Key_Escape:
-            vk = VK_ESCAPE;
-            break;
-        case Qt::Key_Tab:
-            vk = VK_TAB;
-            break;
-        case Qt::Key_Backspace:
-            vk = VK_BACK;
-            break;
-        case Qt::Key_Delete:
-            vk = VK_DELETE;
-            break;
-        case Qt::Key_Insert:
-            vk = VK_INSERT;
-            break;
-        case Qt::Key_Home:
-            vk = VK_HOME;
-            break;
-        case Qt::Key_End:
-            vk = VK_END;
-            break;
-        case Qt::Key_PageUp:
-            vk = VK_PRIOR;
-            break;
-        case Qt::Key_PageDown:
-            vk = VK_NEXT;
-            break;
-        case Qt::Key_Left:
-            vk = VK_LEFT;
-            break;
-        case Qt::Key_Right:
-            vk = VK_RIGHT;
-            break;
-        case Qt::Key_Up:
-            vk = VK_UP;
-            break;
-        case Qt::Key_Down:
-            vk = VK_DOWN;
-            break;
-        default:
-            return false;
-        }
-    }
-
-    *modifiers = nativeModifiers;
-    *virtualKey = vk;
-    return true;
-}
-
-} // namespace
+#ifndef MOD_NOREPEAT
+#define MOD_NOREPEAT 0x4000
+#endif
 
 int GlobalHotkeyManager::eqColorHotkeyId(int colorIndex)
 {
@@ -117,6 +30,10 @@ GlobalHotkeyManager::GlobalHotkeyManager(QObject *parent)
 {
     QApplication::instance()->installNativeEventFilter(this);
     m_filterInstalled = true;
+
+    m_layoutTimer = new QTimer(this);
+    m_layoutTimer->setInterval(400);
+    connect(m_layoutTimer, &QTimer::timeout, this, &GlobalHotkeyManager::reregisterIfLayoutChanged);
 }
 
 GlobalHotkeyManager::~GlobalHotkeyManager()
@@ -130,34 +47,50 @@ GlobalHotkeyManager::~GlobalHotkeyManager()
 
 void GlobalHotkeyManager::apply(const AppSettings &settings, WId windowId)
 {
-    clear();
+    unregisterAll();
+    m_settings = settings;
     m_windowId = windowId;
+    m_registeredLayout = 0;
 
     if (!settings.keybindsEnabled || windowId == 0) {
+        m_layoutTimer->stop();
         return;
     }
 
-    registerSequence(kEqToggleHotkeyId,
-                     settings.eqToggleKeybind,
-                     windowId,
-                     QStringLiteral("EQ disable all"));
-    registerSequence(kOutputMuteHotkeyId,
-                     settings.outputMuteKeybind,
-                     windowId,
-                     QStringLiteral("Mute output"));
-
-    for (int colorIndex = 0; colorIndex < AppSettings::kEqColorKeybindCount; ++colorIndex) {
-        registerSequence(eqColorHotkeyId(colorIndex),
-                         settings.eqColorKeybinds[static_cast<size_t>(colorIndex)],
-                         windowId,
-                         QStringLiteral("Mute EQ label %1").arg(colorIndex + 1));
-    }
+    registerAll();
+    m_registeredLayout = HotkeySequence::layoutToken();
+    m_layoutTimer->start();
 }
 
 void GlobalHotkeyManager::clear()
 {
     unregisterAll();
+    m_layoutTimer->stop();
     m_windowId = 0;
+    m_registeredLayout = 0;
+}
+
+void GlobalHotkeyManager::registerAll()
+{
+    if (!m_settings.keybindsEnabled || m_windowId == 0) {
+        return;
+    }
+
+    registerSequence(kEqToggleHotkeyId,
+                     m_settings.eqToggleKeybind,
+                     m_windowId,
+                     QStringLiteral("EQ disable all"));
+    registerSequence(kOutputMuteHotkeyId,
+                     m_settings.outputMuteKeybind,
+                     m_windowId,
+                     QStringLiteral("Mute output"));
+
+    for (int colorIndex = 0; colorIndex < AppSettings::kEqColorKeybindCount; ++colorIndex) {
+        registerSequence(eqColorHotkeyId(colorIndex),
+                         m_settings.eqColorKeybinds[static_cast<size_t>(colorIndex)],
+                         m_windowId,
+                         QStringLiteral("Mute EQ label %1").arg(colorIndex + 1));
+    }
 }
 
 bool GlobalHotkeyManager::registerSequence(int hotkeyId,
@@ -169,21 +102,21 @@ bool GlobalHotkeyManager::registerSequence(int hotkeyId,
         return true;
     }
 
-    const QKeySequence sequence(sequenceText);
-    if (sequence.isEmpty()) {
+    const HotkeySequence sequence = HotkeySequence::fromStoredString(sequenceText);
+    if (!sequence.isValid()) {
         emit registrationFailed(QStringLiteral("%1 keybind is invalid").arg(label));
         return false;
     }
 
-    UINT modifiers = 0;
-    UINT virtualKey = 0;
-    if (!sequenceToNative(sequence, &modifiers, &virtualKey)) {
+    quint32 modifiers = 0;
+    quint32 virtualKey = 0;
+    if (!sequence.toNative(&modifiers, &virtualKey)) {
         emit registrationFailed(QStringLiteral("%1 keybind uses an unsupported key").arg(label));
         return false;
     }
 
     const HWND hwnd = reinterpret_cast<HWND>(windowId);
-    if (!RegisterHotKey(hwnd, static_cast<int>(hotkeyId), modifiers, virtualKey)) {
+    if (!RegisterHotKey(hwnd, static_cast<int>(hotkeyId), modifiers | MOD_NOREPEAT, virtualKey)) {
         emit registrationFailed(QStringLiteral("%1 keybind could not be registered (already in use?)")
                                     .arg(label));
         return false;
@@ -204,6 +137,22 @@ void GlobalHotkeyManager::unregisterAll()
     }
 }
 
+void GlobalHotkeyManager::reregisterIfLayoutChanged()
+{
+    if (!m_settings.keybindsEnabled || m_windowId == 0) {
+        return;
+    }
+
+    const quintptr layout = HotkeySequence::layoutToken();
+    if (layout == m_registeredLayout) {
+        return;
+    }
+
+    unregisterAll();
+    registerAll();
+    m_registeredLayout = layout;
+}
+
 bool GlobalHotkeyManager::nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result)
 {
     Q_UNUSED(result)
@@ -213,6 +162,11 @@ bool GlobalHotkeyManager::nativeEventFilter(const QByteArray &eventType, void *m
     }
 
     const MSG *msg = static_cast<const MSG *>(message);
+    if (msg->message == WM_INPUTLANGCHANGE || msg->message == WM_INPUTLANGCHANGEREQUEST) {
+        reregisterIfLayoutChanged();
+        return false;
+    }
+
     if (msg->message != WM_HOTKEY) {
         return false;
     }

@@ -11,8 +11,6 @@ public:
     static constexpr int kDisplayBars = 48;
 
     void reset();
-    void pushBefore(const float *samples, int frameCount, int channelCount);
-    void pushAfter(const float *samples, int frameCount, int channelCount);
     void pushBeforeAndAfter(const float *beforeSamples,
                             const float *afterSamples,
                             int frameCount,

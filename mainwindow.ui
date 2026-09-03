@@ -472,32 +472,12 @@
           </item>
          </layout>
         </item>
-        <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_3">
-          <item>
-           <widget class="QPushButton" name="enableEqButton">
-            <property name="text">
-             <string>Enable EQ</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="disableEqButton">
-            <property name="text">
-             <string>Disable EQ</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="resetBandsButton">
-            <property name="text">
-             <string>Reset bands</string>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </item>
        </layout>
+       <widget class="QPushButton" name="resetBandsButton">
+        <property name="text">
+         <string>Reset</string>
+        </property>
+       </widget>
        </widget>
       </item>
       <item>
@@ -597,6 +577,9 @@
          <string>Running Apps</string>
         </property>
         <layout class="QVBoxLayout" name="runningAppsLayout">
+         <property name="spacing">
+          <number>8</number>
+         </property>
          <item>
           <layout class="QHBoxLayout" name="runningAppsHeaderLayout">
            <item>
@@ -620,6 +603,13 @@
             </spacer>
            </item>
            <item>
+            <widget class="QPushButton" name="disableAllButton">
+             <property name="text">
+              <string>Disable all</string>
+             </property>
+            </widget>
+           </item>
+           <item>
             <widget class="QPushButton" name="refreshButton">
              <property name="text">
               <string>Refresh</string>
@@ -635,26 +625,6 @@
            </property>
            <property name="selectionMode">
             <enum>QAbstractItemView::SelectionMode::SingleSelection</enum>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QLabel" name="emptyStateLabel">
-           <property name="text">
-            <string>No apps playing audio</string>
-           </property>
-           <property name="alignment">
-            <set>Qt::AlignmentFlag::AlignCenter</set>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QLabel" name="runningAppsHintLabel">
-           <property name="text">
-            <string>Double-click an app to toggle EQ · or select and use Enable EQ</string>
-           </property>
-           <property name="alignment">
-            <set>Qt::AlignmentFlag::AlignCenter</set>
            </property>
           </widget>
          </item>
@@ -695,6 +665,7 @@
      <string>Settings</string>
     </property>
     <addaction name="actionSettings"/>
+    <addaction name="actionAudioChain"/>
     <addaction name="actionKeybinds"/>
     <addaction name="actionQuit"/>
    </widget>
@@ -703,6 +674,11 @@
   <action name="actionSettings">
    <property name="text">
     <string>Options</string>
+   </property>
+  </action>
+  <action name="actionAudioChain">
+   <property name="text">
+    <string>Audio chain</string>
    </property>
   </action>
   <action name="actionKeybinds">

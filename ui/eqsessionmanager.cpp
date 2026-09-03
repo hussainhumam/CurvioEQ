@@ -49,6 +49,11 @@ void EqSessionManager::setDynamicsStateReader(std::function<DynamicRangeSettings
     m_dynamicsStateReader = std::move(reader);
 }
 
+void EqSessionManager::setAudioChainOrderReader(std::function<AudioChainOrder()> reader)
+{
+    m_audioChainOrderReader = std::move(reader);
+}
+
 void EqSessionManager::setDisplayNameProvider(std::function<QString(unsigned long)> provider)
 {
     m_displayNameProvider = std::move(provider);
@@ -62,11 +67,6 @@ bool EqSessionManager::isAnyRunning() const
 bool EqSessionManager::isRunning(unsigned long processId) const
 {
     return m_engine && m_engine->isSessionActive(processId);
-}
-
-QVector<unsigned long> EqSessionManager::activeProcessIds() const
-{
-    return m_engine ? m_engine->activeProcessIds() : QVector<unsigned long>{};
 }
 
 QHash<unsigned long, QColor> EqSessionManager::activeSessionColors() const
@@ -129,17 +129,6 @@ QVector<ConfiguredEqSession> EqSessionManager::configuredTraySessions() const
     return sessions;
 }
 
-const EqSessionSnapshot *EqSessionManager::findSnapshot(unsigned long processId) const
-{
-    const auto it = m_snapshots.constFind(processId);
-    return it == m_snapshots.constEnd() ? nullptr : &it.value();
-}
-
-EqSessionSnapshot EqSessionManager::snapshotFor(unsigned long processId) const
-{
-    return m_snapshots.value(processId);
-}
-
 bool EqSessionManager::enableForProcess(unsigned long processId)
 {
     if (!m_engine || processId == 0) {
@@ -166,6 +155,9 @@ bool EqSessionManager::enableForProcess(unsigned long processId)
     }
     if (m_dynamicsStateReader) {
         snapshot.dynamicRange = m_dynamicsStateReader();
+    }
+    if (m_audioChainOrderReader) {
+        snapshot.audioChainOrder = normalizeAudioChainOrder(m_audioChainOrderReader());
     }
 
     QString sinkDeviceId;
@@ -194,8 +186,8 @@ bool EqSessionManager::enableForProcess(unsigned long processId)
                                 snapshot.eq,
                                 snapshot.virtualSurround,
                                 snapshot.dynamicRange,
+                                snapshot.audioChainOrder,
                                 outputDeviceId,
-                                outputDeviceName,
                                 sinkDeviceId,
                                 muteRoutingSink,
                                 &errorMessage)) {
@@ -204,10 +196,6 @@ bool EqSessionManager::enableForProcess(unsigned long processId)
     }
 
     snapshot.processId = processId;
-    snapshot.eqOutputDeviceId = outputDeviceId;
-    snapshot.eqOutputDeviceName = outputDeviceName;
-    snapshot.sinkDeviceId = sinkDeviceId;
-    snapshot.sinkDeviceName = sinkDeviceName;
     snapshot.labelColor = labelColor;
     snapshot.active = true;
     snapshot.hasStoredGains = true;
@@ -240,7 +228,8 @@ void EqSessionManager::disableForProcess(unsigned long processId)
     if (m_eqStateReader) {
         saveDraftForProcess(processId, m_eqStateReader(),
                             m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{},
-                            m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{});
+                            m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{},
+                            m_audioChainOrderReader ? m_audioChainOrderReader() : defaultAudioChainOrder());
     }
 
     m_engine->stopSession(processId);
@@ -293,7 +282,8 @@ bool EqSessionManager::restoreForProcess(unsigned long processId)
 void EqSessionManager::saveDraftForProcess(unsigned long processId,
                                            const EqState &eqState,
                                            const VirtualSurroundSettings &virtualSurround,
-                                           const DynamicRangeSettings &dynamicRange)
+                                           const DynamicRangeSettings &dynamicRange,
+                                           const AudioChainOrder &audioChainOrder)
 {
     if (processId == 0) {
         return;
@@ -304,6 +294,7 @@ void EqSessionManager::saveDraftForProcess(unsigned long processId,
     snapshot.eq = eqState;
     snapshot.virtualSurround = virtualSurround;
     snapshot.dynamicRange = dynamicRange;
+    snapshot.audioChainOrder = normalizeAudioChainOrder(audioChainOrder);
     snapshot.hasStoredGains = true;
     m_snapshots.insert(processId, snapshot);
 
@@ -311,25 +302,30 @@ void EqSessionManager::saveDraftForProcess(unsigned long processId,
         m_engine->setSessionEqState(processId, eqState);
         m_engine->setSessionVirtualSurround(processId, virtualSurround);
         m_engine->setSessionDynamicRange(processId, dynamicRange);
+        m_engine->setSessionAudioChainOrder(processId, snapshot.audioChainOrder);
     }
 }
 
 void EqSessionManager::applySnapshotToUi(unsigned long processId,
                                            const std::function<void(const EqState &)> &applyEq,
                                            const std::function<void(const VirtualSurroundSettings &)> &applySurround,
-                                           const std::function<void(const DynamicRangeSettings &)> &applyDynamics) const
+                                           const std::function<void(const DynamicRangeSettings &)> &applyDynamics,
+                                           const std::function<void(const AudioChainOrder &)> &applyAudioChain) const
 {
     const EqSessionSnapshot snapshot = m_snapshots.value(processId);
     if (snapshot.hasStoredGains || snapshot.active) {
         applyEq(snapshot.eq);
         applySurround(snapshot.virtualSurround);
         applyDynamics(snapshot.dynamicRange);
+        applyAudioChain(normalizeAudioChainOrder(snapshot.audioChainOrder));
         return;
     }
 
     applyEq(EqState{});
     applySurround(VirtualSurroundSettings{});
     applyDynamics(DynamicRangeSettings{});
+    applyAudioChain(m_store ? normalizeAudioChainOrder(m_store->settings().audioChainOrder)
+                            : defaultAudioChainOrder());
 }
 
 void EqSessionManager::pushLiveGainsForProcess(unsigned long processId)
@@ -347,8 +343,10 @@ void EqSessionManager::pushLiveGainsForProcess(unsigned long processId)
         m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{};
     const DynamicRangeSettings dynamicRange =
         m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{};
+    const AudioChainOrder audioChainOrder =
+        m_audioChainOrderReader ? m_audioChainOrderReader() : defaultAudioChainOrder();
     for (unsigned long pid : linkedProcessIds(processId)) {
-        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange);
+        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange, audioChainOrder);
     }
 }
 
@@ -374,8 +372,10 @@ void EqSessionManager::pushLiveSurroundForProcess(unsigned long processId)
     const VirtualSurroundSettings virtualSurround = m_surroundStateReader();
     const DynamicRangeSettings dynamicRange =
         m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{};
+    const AudioChainOrder audioChainOrder =
+        m_audioChainOrderReader ? m_audioChainOrderReader() : defaultAudioChainOrder();
     for (unsigned long pid : linkedProcessIds(processId)) {
-        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange);
+        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange, audioChainOrder);
     }
 }
 
@@ -392,8 +392,30 @@ void EqSessionManager::pushLiveDynamicsForProcess(unsigned long processId)
     const VirtualSurroundSettings virtualSurround =
         m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{};
     const DynamicRangeSettings dynamicRange = m_dynamicsStateReader();
+    const AudioChainOrder audioChainOrder =
+        m_audioChainOrderReader ? m_audioChainOrderReader() : defaultAudioChainOrder();
     for (unsigned long pid : linkedProcessIds(processId)) {
-        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange);
+        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange, audioChainOrder);
+    }
+}
+
+void EqSessionManager::pushLiveAudioChainForProcess(unsigned long processId)
+{
+    if (!m_audioChainOrderReader || processId == 0) {
+        return;
+    }
+    if (!m_eqStateReader) {
+        return;
+    }
+
+    const EqState eqState = m_eqStateReader();
+    const VirtualSurroundSettings virtualSurround =
+        m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{};
+    const DynamicRangeSettings dynamicRange =
+        m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{};
+    const AudioChainOrder audioChainOrder = m_audioChainOrderReader();
+    for (unsigned long pid : linkedProcessIds(processId)) {
+        saveDraftForProcess(pid, eqState, virtualSurround, dynamicRange, audioChainOrder);
     }
 }
 

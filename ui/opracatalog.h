@@ -32,6 +32,7 @@ public:
 
     static bool loadCache(QVector<OpraProfile> *out, QString *errorMessage = nullptr);
     static bool saveCache(const QVector<OpraProfile> &entries, QString *errorMessage = nullptr);
+    static bool clearCache(QString *errorMessage = nullptr);
 
     static bool parseDatabaseJsonl(const QByteArray &jsonl,
                                    QVector<OpraProfile> *out,
@@ -40,7 +41,4 @@ public:
     static bool toEqState(const OpraProfile &profile, EqState *state, QString *errorMessage = nullptr);
 
     static OnlinePresetProfile toOnlineProfile(const OpraProfile &profile);
-    static QVector<OnlinePresetProfile> toOnlineProfiles(const QVector<OpraProfile> &profiles);
-
-    static QVector<OpraProfile> filter(const QVector<OpraProfile> &all, const QString &query);
 };

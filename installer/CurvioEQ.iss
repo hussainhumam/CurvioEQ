@@ -1,5 +1,5 @@
 #define MyAppName "CurvioEQ"
-#define MyAppVersion "1.2.1"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "Hussein"
 #define MyAppExeName "bin\CurvioEQ.exe"
 #define DeployDir "..\dist"
@@ -18,6 +18,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+CloseApplications=yes
 PrivilegesRequired=admin
 SetupIconFile=..\resources\app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
@@ -43,7 +44,7 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; Components: app
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent; Components: app
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall; Components: app
 
 [Messages]
 FinishedLabel=CurvioEQ is installed.%n%nSelect an app, pick a preset, and EQ will play on your chosen output device.

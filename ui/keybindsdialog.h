@@ -3,10 +3,13 @@
 #include "settingsstore.h"
 
 #include <QDialog>
+#include <QVector>
 #include <array>
 
 class QCheckBox;
-class QKeySequenceEdit;
+class QEvent;
+class QLabel;
+class HotkeyEdit;
 
 class KeybindsDialog : public QDialog
 {
@@ -14,20 +17,27 @@ class KeybindsDialog : public QDialog
 
 public:
     explicit KeybindsDialog(const AppSettings &current, QWidget *parent = nullptr);
+    ~KeybindsDialog() override;
 
     AppSettings resultSettings() const;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void accept() override;
     void onKeybindsEnabledToggled(bool enabled);
+    void onSequenceChanged();
 
 private:
     void updateEditorState();
-    QStringList assignedKeybinds() const;
+    void refreshConflictsAndStatus();
+    QVector<HotkeyEdit *> allEdits() const;
 
     QCheckBox *m_enableKeybindsCheck = nullptr;
-    QKeySequenceEdit *m_eqToggleEdit = nullptr;
-    QKeySequenceEdit *m_outputMuteEdit = nullptr;
-    std::array<QKeySequenceEdit *, AppSettings::kEqColorKeybindCount> m_colorEdits{};
+    HotkeyEdit *m_eqToggleEdit = nullptr;
+    HotkeyEdit *m_outputMuteEdit = nullptr;
+    std::array<HotkeyEdit *, AppSettings::kEqColorKeybindCount> m_colorEdits{};
+    QLabel *m_statusLabel = nullptr;
     AppSettings m_result;
 };

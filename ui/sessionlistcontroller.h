@@ -1,24 +1,37 @@
 #pragma once
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QHash>
+#include <QModelIndex>
 #include <QObject>
 
 class AppSessionDelegate;
+class QEvent;
 class QLabel;
 class QListView;
+class QStandardItem;
 class QStandardItemModel;
 class QTimer;
+
+struct AudioSessionInfo;
 
 class SessionListController : public QObject
 {
     Q_OBJECT
 
 public:
-    SessionListController(QListView *listView,
-                          QLabel *countLabel,
-                          QLabel *emptyLabel,
-                          QObject *parent = nullptr);
+    enum ItemRole {
+        RoleProcessId = Qt::UserRole,
+        RoleOutputDeviceId = Qt::UserRole + 1,
+        RoleOutputDeviceName = Qt::UserRole + 2,
+        RoleDisplayName = Qt::UserRole + 3,
+        RoleEqActive = Qt::UserRole + 4,
+        RoleEqColor = Qt::UserRole + 5,
+        RoleMuted = Qt::UserRole + 6,
+    };
+
+    SessionListController(QListView *listView, QLabel *countLabel, QObject *parent = nullptr);
 
     void setEqSessions(const QHash<unsigned long, QColor> &activeSessions);
     void setAutoRefreshEnabled(bool enabled);
@@ -27,6 +40,9 @@ public:
     unsigned long selectedProcessId() const;
     QString displayNameForPid(unsigned long pid) const;
     int appCount() const;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 signals:
     void selectionChanged();
@@ -42,15 +58,18 @@ private slots:
     void showContextMenu(const QPoint &position);
 
 private:
-    void updateEmptyState();
     unsigned long processIdAt(const QModelIndex &index) const;
     QString currentOutputDeviceIdAt(const QModelIndex &index) const;
+    void updateCountLabel();
+    void applySessionToItem(QStandardItem *item, const AudioSessionInfo &session);
+    void toggleEqAt(const QModelIndex &index);
+    int rowForProcessId(unsigned long processId) const;
 
     QListView *m_listView = nullptr;
     QLabel *m_countLabel = nullptr;
-    QLabel *m_emptyLabel = nullptr;
     QStandardItemModel *m_model = nullptr;
     AppSessionDelegate *m_delegate = nullptr;
     QTimer *m_timer = nullptr;
+    QElapsedTimer m_lastPress;
     QHash<unsigned long, QColor> m_eqSessions;
 };

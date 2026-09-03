@@ -22,6 +22,7 @@ public:
 
     static bool loadCache(QVector<AutoEqProfile> *out, QString *errorMessage = nullptr);
     static bool saveCache(const QVector<AutoEqProfile> &entries, QString *errorMessage = nullptr);
+    static bool clearCache(QString *errorMessage = nullptr);
 
     static bool parseIndexMarkdown(const QByteArray &markdown,
                                    QVector<AutoEqProfile> *out,
@@ -37,6 +38,4 @@ public:
     static bool parseParametricEqToState(const QString &text,
                                          EqState *state,
                                          QString *errorMessage = nullptr);
-
-    static QVector<AutoEqProfile> filter(const QVector<AutoEqProfile> &all, const QString &query);
 };

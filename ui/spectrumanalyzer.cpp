@@ -53,18 +53,6 @@ void SpectrumCapture::pushRing(std::vector<float> *ring,
     }
 }
 
-void SpectrumCapture::pushBefore(const float *samples, int frameCount, int channelCount)
-{
-    QMutexLocker lock(&m_mutex);
-    pushRing(&m_beforeRing, &m_beforeWrite, &m_beforeFilled, samples, frameCount, channelCount);
-}
-
-void SpectrumCapture::pushAfter(const float *samples, int frameCount, int channelCount)
-{
-    QMutexLocker lock(&m_mutex);
-    pushRing(&m_afterRing, &m_afterWrite, &m_afterFilled, samples, frameCount, channelCount);
-}
-
 void SpectrumCapture::pushBeforeAndAfter(const float *beforeSamples,
                                          const float *afterSamples,
                                          int frameCount,

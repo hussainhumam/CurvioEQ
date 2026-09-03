@@ -4,30 +4,86 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QStandardPaths>
+
+namespace {
+QString roamingAppData()
+{
+    QString roaming = QString::fromLocal8Bit(qgetenv("APPDATA"));
+    if (roaming.isEmpty()) {
+        roaming = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    }
+    if (roaming.isEmpty()) {
+        roaming = QDir::homePath() + QStringLiteral("/AppData/Roaming");
+    }
+    return roaming;
+}
+
+QString settingsFileIn(const QString &root)
+{
+    return QDir(root).filePath(QStringLiteral("settings.json"));
+}
+}
+
+QStringList AppPaths::settingsSearchRoots()
+{
+    const QString roaming = roamingAppData();
+    const QString appId = QString::fromLatin1(AppConstants::kAppId);
+    return {
+        QDir(roaming).filePath(appId),
+        QDir(roaming).filePath(appId + QLatin1Char('/') + appId),
+        QDir(roaming).filePath(QStringLiteral("PerAppEQ")),
+        QDir(roaming).filePath(QStringLiteral("PerAppEQ/PerAppEQ")),
+    };
+}
 
 QString AppPaths::dataRoot()
 {
-    QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (root.isEmpty()) {
-        root = QDir::homePath() + QStringLiteral("/AppData/Roaming/")
-               + QString::fromLatin1(AppConstants::kAppId);
-    }
-
-    const QString settingsPath = QDir(root).filePath(QStringLiteral("settings.json"));
-    if (!QFile::exists(settingsPath)) {
-        const QString legacyRoot = QDir::homePath() + QStringLiteral("/AppData/Roaming/PerAppEQ");
-        const QString legacySettings = QDir(legacyRoot).filePath(QStringLiteral("settings.json"));
-        if (QFile::exists(legacySettings)) {
-            QDir().mkpath(root);
-            QFile::copy(legacySettings, settingsPath);
+    const QStringList roots = settingsSearchRoots();
+    for (const QString &root : roots) {
+        if (QFile::exists(settingsFileIn(root))) {
+            return root;
         }
     }
 
+    const QString root = roots.constFirst();
+    QDir().mkpath(root);
     return root;
 }
 
 QString AppPaths::soundModsRoot()
 {
     return QDir(dataRoot()).filePath(QStringLiteral("soundmods"));
+}
+
+bool AppPaths::hasExistingSettingsFile()
+{
+    for (const QString &root : settingsSearchRoots()) {
+        if (QFile::exists(settingsFileIn(root))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static QString welcomeMarkerPath()
+{
+    return QDir(roamingAppData()).filePath(
+        QString::fromLatin1(AppConstants::kAppId) + QStringLiteral("/welcome.shown"));
+}
+
+bool AppPaths::welcomeMarkerExists()
+{
+    return QFile::exists(welcomeMarkerPath());
+}
+
+void AppPaths::markWelcomeShown()
+{
+    const QString path = welcomeMarkerPath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write("1\n");
+    }
 }

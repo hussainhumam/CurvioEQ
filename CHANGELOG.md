@@ -2,7 +2,169 @@
 
 All notable changes to CurvioEQ are documented here.
 
-## [Released]
+## [1.3.0] - 2026-09-03
+
+CurvioEQ 1.3.0 is a big quality-of-life and mixing release on top of 1.2.1. There is a new **Edit** menu with EQ Undo / Redo. Advanced EQ is faster to edit. Presets can store more than EQ. HRTF, Dynamics, and processing order can follow the app you have selected. The main window, keybinds, online headphone lists, and updates are cleaned up. Built-in tone curves are unchanged.
+
+### Edit menu (new)
+
+1.2.1 had no EQ undo. **Edit** is a new menu:
+
+- **Undo** — Ctrl+Z — steps back the last EQ change (Simple sliders or Advanced filters)
+- **Redo** — Ctrl+Y (also Ctrl+Shift+Z) — steps forward again
+- A continuous drag is one step, not dozens
+- Shortcuts use the physical Z and Y keys, so they work on Arabic and other layouts, and while a frequency / gain / Q box is focused
+
+### Advanced EQ
+
+Advanced mode is built around the frequency-response graph.
+
+**Selecting and moving dots**
+- Click a dot to select it. The selected handle is larger and highlighted.
+- Drag a box around several dots to select them as a group.
+- Drag any selected dot and the whole group moves together, so a mid-range bump or a high-end shelf can be shifted without rebuilding each filter.
+- Filters still cannot cross each other on the frequency axis, so the curve stays ordered from low to high.
+
+**Adding a filter with a preview**
+- Hover empty space on the graph. A ghost peaking filter appears at the pointer.
+- A faint second curve shows how the full response would look if you added that filter — boost, cut, and how it blends with what is already there — before you commit.
+- Right-click **Add dot** to place it (up to the existing filter limit). Default new filters are peaking at standard Q.
+
+**Removing filters**
+- **Delete** or **Backspace** removes every selected dot. No need to right-click each one.
+- Right-click **Remove dot** still removes the handle under the cursor (or the current selection).
+- Right-click **Reset** still zeros Advanced EQ.
+
+**Readout at the bottom left**
+- The graph prints a live line in the lower left, for example: `Peaking    Fc  3500 Hz    Gain  +4.0 dB    Q  1.41`
+- It follows what you are hovering, dragging, or about to add: filter type (peaking / low shelf / high shelf), center frequency, gain, and Q.
+- Hovering an existing handle still shows the same values on the handle itself.
+
+**Slider tips**
+- Sliders and the graph show the value in a tip while you drag (dB, %, dynamics mode).
+
+Simple mode is unchanged: ten bands, master **All** slider. Switching Simple ↔ Advanced still keeps each mode’s last curve; a loaded Advanced/AutoEQ preset still cannot drop to Simple until you reset to flat.
+
+### Presets
+
+**Save what you actually want**
+- Save is no longer a name-only prompt. You get checkboxes: **EQ** (on by default), **HRTF**, **Dynamics**, **Audio chain**, and **All**.
+- OK stays off until there is a name and at least one section. Default names are still “My preset” / “My Advanced preset”.
+- Load applies **only** the sections that were saved. Unsaved parts of that app stay as they are. Example: an HRTF-only preset does not flatten EQ or flip Simple/Advanced.
+
+**What a click will change**
+- User-saved items show a suffix such as `EQ+HRTF` or `EQ+Dynamics+Chain`. Advanced EQ still shows **· Advanced**.
+- Hover a list row for “Includes: …”.
+
+**Per app, not the whole PC**
+- HRTF, Dynamics, and chain stored in a preset apply to the **currently selected app**.
+- Other apps keep their own EQ, surround, dynamics, and order.
+- **Audio → Audio chain** in the menu is still the program-wide default for a newly enabled app. A preset can override that default for one app.
+
+**Favorites and sections**
+- Right-click a preset to add or remove a favorite (yellow star). Favorites sit at the top.
+- List order: **Favorites**, **Generic**, **Gaming**, **Saved**.
+- Export / Delete stay on the right-click menu for saved presets.
+
+**Imports and built-ins**
+- AutoEQ, Squiglink, and OPRA stay **EQ-only** (measurement data, not a full mix). No extra save dialog on import.
+- Built-ins (Flat, Bass Boost, Treble Boost, Vocal Boost, Rock, Electronic, Warm & Smooth, Speech Clarity, Pop / Balanced, FPS Footsteps, Competitive Shooter, Battle Royale, RPG Immersive, Racing Engine) are the **original 10-band curves**. They do not turn HRTF or Dynamics on, and they do not change chain order.
+
+### Audio chain
+
+You can reorder the live path: **EQ**, **Virtual surround (HRTF)**, **Dynamics**, **Loudness**. First in the list runs first. A stage that is turned off is skipped.
+
+Why order matters:
+- **HRTF then EQ** — game/multichannel audio is spatialized first, then you EQ the headphone stereo image. Typical for competitive: localize, then carve footsteps.
+- **EQ then HRTF** — you tone-shape the mix, then spatialize it. Often nicer for music and cinematic games.
+- **Dynamics / loudness later** — they ride the already-shaped signal. Swapping them with EQ changes punch vs how even the level feels.
+
+Sample-rate conversion still happens after this list. You do not place it in the chain.
+
+### HRTF / virtual surround
+
+The surround block is rebuilt to take less vertical space and to apply immediately.
+
+- Header: **Enable HRTF** and **Reset**.
+- One row: **Preset** (Default / Wide / Close) and **Strength** (0–100%, tip while dragging).
+- Speaker levels in a room layout with **You** in the center: front L/C/R, side L/R, rear L/R. LFE is shown but unused for headphones.
+- **Wide** — more outside-the-head, stronger left/right (world audio, footsteps).
+- **Close** — more in-head / cockpit.
+- **Default** — in between.
+- There is **no Apply button**. Enable, preset, strength, and speaker levels go to the selected app as you change them.
+- Reset restores default speaker levels (and the usual HRTF defaults) for that app.
+
+### Dynamics and loudness
+
+Same processors as 1.2.1, easier to save per app and to slot in the chain.
+
+- Toward **Open** — more contrast; quiet stays quiet; distance and explosion punch stay intact.
+- Toward **Tight** — quiet detail comes up relative to peaks (footsteps vs gunfire).
+- **Loudness** aims at a target (shown in LUFS). **0 is off**. Useful for playlists; leave it off for competitive if you still want level to mean “how far.”
+- Dynamics **Reset** is sized with the other compact headers.
+
+### Running apps
+
+- **Enable EQ** and **Disable EQ** buttons are gone. Toggle with **double-click** or **right-click**. **Disable all** remains next to **Refresh**.
+- Each row shows the **output device** under the app name, plus **EQ on** / **muted** when those apply.
+- The list refreshes much more often (about every half second instead of every five seconds), so device and mute changes show up quickly.
+- If an app has several audio sessions, CurvioEQ is less likely to pick a microphone or Steam Streaming Speakers row as “the” device.
+
+### Keybinds
+
+The old “type into a shortcut box” editor is gone.
+
+- Click the field, press the combination, done. **Clear** wipes it.
+- The bind is the **physical key**, not the letter on the cap. Switching Windows to Arabic (or any layout) does not steal the shortcut.
+- Holding a key does not repeat Disable all / mute / color mute.
+- Same actions as before: disable all EQ, mute the EQ output, mute by color label.
+
+### Online headphone presets
+
+Opening **Online presets** used to treat Refresh like a full redownload, so AutoEQ / Squiglink / OPRA indexes fetched again even when you already had them.
+
+- **Refresh** — rebuild the list from files already on disk. No network. Browse immediately.
+- **Redownload presets** — clear the cache and fetch indexes again when you want new measurements.
+- Source filter (All / AutoEQ / Squiglink / OPRA), 500-at-a-time scroll, and import-as-Advanced-EQ behavior from 1.2.1 are unchanged.
+
+### Updates and installer
+
+- Menu **Update** checks GitHub Releases on launch. It reads **Up to date** when you are current.
+- If a newer version exists: tray notification; one click downloads `CurvioEQ-Setup.exe` from the official GitHub release and runs it.
+- After updating, a one-time **What’s new** dialog (from the changelog). **Changelog** next to Update opens it again.
+- The installer can **close a running CurvioEQ** so files replace instead of failing with “cannot open .exe for writing”, then offers to launch.
+
+### Optimizations
+
+- Disabled HRTF, Dynamics, or Loudness are **skipped** in the chain — they do not extra-process the buffer.
+- EQ, HRTF, Dynamics, and chain changes go to the **live** session. Capture/render does not restart.
+- Running Apps list is about **half the old list code**, which is why the faster refresh is practical.
+- The spectrum analyzer takes **one** before/after pass per chunk instead of two copies.
+- Unused FFT code is **not compiled** into the app (it was never on the live headphone path).
+
+### Bug fixes
+
+- Online **Refresh** no longer redownloads the entire catalog.
+- New Edit **Undo / Redo** shortcuts keep working while a gain/frequency box is focused, and on non-QWERTY layouts
+- Global keybinds survive layout switches; they do not auto-repeat on key-repeat.
+- A preset **without EQ** does not flatten bands or force Simple/Advanced.
+- A preset’s HRTF / Dynamics / chain does **not** rewrite the program-wide defaults for every other app.
+- Multi-session apps are less likely to show the wrong output device.
+- Installing over a running copy can succeed because the installer asks Windows to close CurvioEQ.
+- Leftover Enable/Disable EQ and Apply HRTF controls no longer fight double-click toggle and live HRTF.
+
+### Removed dead code and leftovers
+
+- Unused FFT implementation (`realfft`)
+- Old surround-processor source file; 7.1 channel names stay
+- Unused LFE low-pass leftover in the HRTF path (LFE is already silent for headphones)
+- Enable EQ, Disable EQ, and Apply HRTF buttons from the main window
+- Unused EQ helpers (advanced-mode flag setter, bulk filter copy)
+- Unused spectrum “push before” / “push after” APIs (one combined push now)
+- Unused sound-mod format-handler registration leftovers
+- Trimmed Running Apps empty-state / timer duplication
+
+Built-in preset names and 10-band values are the same as 1.2.1. Settings files from 1.2.1 still load; older presets without section flags stay EQ-only.
 
 ## [1.2.1] - 2026-08-26
 

@@ -1,12 +1,14 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "audio/audiochainorder.h"
 #include "audio/audioengine.h"
 #include "audio/eqprocessor.h"
 #include "audio/eqstate.h"
 #include "audio/surroundprocessor.h"
 #include "audio/virtualsurroundsettings.h"
 #include "audio/dynamicrangesettings.h"
+#include "ui/eqhistory.h"
 #include "ui/presetstore.h"
 #include "ui/settingsstore.h"
 #include "ui/spectrumanalyzer.h"
@@ -20,6 +22,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QUrl>
 
 #include <array>
 
@@ -37,6 +40,8 @@ class SessionListController;
 class SingleInstanceServer;
 class SpectrumWidget;
 class TrayController;
+class UpdateChecker;
+class QAction;
 
 class MainWindow : public QMainWindow
 {
@@ -49,15 +54,16 @@ public:
 protected:
     void closeEvent(QCloseEvent *event) override;
     void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
+    void changeEvent(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void onRefreshClicked();
     void onResetClicked();
     void onResetSurroundClicked();
-    void onApplySurroundClicked();
     void onResetDynamicsClicked();
-    void onEnableEq();
-    void onDisableEq();
+    void onAudioChainClicked();
     void onDisableAllEq();
     void onSettingsClicked();
     void onKeybindsClicked();
@@ -72,17 +78,28 @@ private slots:
     void onClearLogClicked();
     void onEqModeToggled();
     void onParametricEqChanged();
+    void onUndoEq();
+    void onRedoEq();
+    void onUpdateClicked();
+    void onChangelogClicked();
 
 private:
     void setupSurroundUi();
     void setupDynamicsUi();
-    void setupEqControls();
     void setupEqModeUi();
     void restructureLayout();
     void updateSurroundControlsEnabled();
     void updateDynamicsControlsEnabled();
     void setEqUiModeAdvanced(bool advanced, bool convertState);
     void persistEqUiMode();
+    void setupEqHistory();
+    void setupUpdateChecker();
+    void showChangelogDialog(const QString &markdown);
+    void markChangelogShown();
+    void beginUserEqEdit();
+    void endUserEqEdit();
+    void applyEqHistoryState(const EqState &state);
+    void updateEqHistoryActions();
     void markSimpleEqEdited();
     void syncEqModeCachesFromState(const EqState &state);
     void captureAdvancedEntryBaseline(const EqState &state);
@@ -94,15 +111,19 @@ private:
     std::array<float, EqProcessor::kBandCount> readSliderGains() const;
     VirtualSurroundSettings readVirtualSurroundState() const;
     DynamicRangeSettings readDynamicRangeState() const;
+    AudioChainOrder readAudioChainOrder() const;
 
     void applyEqStateToUi(const EqState &state);
     void applyGainsToSliders(const std::array<float, EqProcessor::kBandCount> &gains);
     void applySurroundToUi(const VirtualSurroundSettings &settings);
     void applyDynamicRangeToUi(const DynamicRangeSettings &settings);
+    void applyAudioChainToUi(const AudioChainOrder &order);
     void applySurroundToEngine();
     void applyDynamicRangeToEngine();
+    void applyAudioChainToEngine();
     void saveSurroundSettings();
     void saveDynamicRangeSettings();
+    void saveAudioChainSettings();
     void saveSpectrumSettings();
     void syncSlidersToSelection();
     void updateSpectrumForSelection();
@@ -113,6 +134,7 @@ private:
     void applySettings(const AppSettings &settings);
     void applyKeybindSettings();
     void updateEqControlState();
+    void updateSessionListAutoRefresh();
     void refreshSessionList();
     void resetMasterSlider();
 
@@ -135,8 +157,6 @@ private:
     QSlider *m_hrtfStrengthSlider = nullptr;
     QLabel *m_hrtfStrengthValueLabel = nullptr;
     QPushButton *m_resetSurroundButton = nullptr;
-    QPushButton *m_applySurroundButton = nullptr;
-    QPushButton *m_disableAllButton = nullptr;
     QPushButton *m_clearLogButton = nullptr;
     std::array<QSpinBox *, SurroundProcessor::kChannelCount> m_surroundSpins{};
 
@@ -147,6 +167,8 @@ private:
     QLabel *m_dynamicsModeLabel = nullptr;
     QSlider *m_loudnessAmountSlider = nullptr;
     QLabel *m_loudnessTargetLabel = nullptr;
+
+    AudioChainOrder m_audioChainOrder{};
 
     QPushButton *m_simpleModeButton = nullptr;
     QPushButton *m_advancedModeButton = nullptr;
@@ -165,6 +187,20 @@ private:
     bool m_advancedPresetLocked = false;
     bool m_cachedAdvancedPresetLocked = false;
     EqState m_advancedEntryBaseline{};
+
+    QAction *m_undoAction = nullptr;
+    QAction *m_redoAction = nullptr;
+    QAction *m_updateAction = nullptr;
+    QAction *m_changelogAction = nullptr;
+    UpdateChecker *m_updateChecker = nullptr;
+    QUrl m_pendingInstallerUrl;
+    QString m_changelogSinceVersion;
+    bool m_updating = false;
+    bool m_changelogAutoShow = false;
+    EqHistory m_eqHistory;
+    EqState m_lastEqSnapshot{};
+    bool m_eqHistoryCoalescing = false;
+    bool m_applyingEqHistory = false;
 
     std::array<QSlider *, EqProcessor::kBandCount> m_bandSliders{};
     QSlider *m_masterSlider = nullptr;

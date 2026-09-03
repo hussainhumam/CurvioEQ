@@ -152,6 +152,21 @@ bool AutoEqCatalog::saveCache(const QVector<AutoEqProfile> &entries, QString *er
     return true;
 }
 
+bool AutoEqCatalog::clearCache(QString *errorMessage)
+{
+    QFile file(cacheFilePath());
+    if (!file.exists()) {
+        return true;
+    }
+    if (!file.remove()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Could not delete AutoEQ cache: %1").arg(cacheFilePath());
+        }
+        return false;
+    }
+    return true;
+}
+
 bool AutoEqCatalog::parseIndexMarkdown(const QByteArray &markdown,
                                        QVector<AutoEqProfile> *out,
                                        QString *errorMessage)
@@ -380,22 +395,4 @@ bool AutoEqCatalog::parseParametricEqToState(const QString &text,
     *state = EqResponse::advancedToSimple(*state);
     state->advanced = true;
     return true;
-}
-
-QVector<AutoEqProfile> AutoEqCatalog::filter(const QVector<AutoEqProfile> &all, const QString &query)
-{
-    const QString needle = query.trimmed();
-    if (needle.isEmpty()) {
-        return all;
-    }
-
-    QVector<AutoEqProfile> matched;
-    matched.reserve(qMin(all.size(), qsizetype{512}));
-    for (const AutoEqProfile &profile : all) {
-        if (profile.name.contains(needle, Qt::CaseInsensitive)
-            || profile.source.contains(needle, Qt::CaseInsensitive)) {
-            matched.push_back(profile);
-        }
-    }
-    return matched;
 }

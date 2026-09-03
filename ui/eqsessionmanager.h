@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/audiochainorder.h"
 #include "audio/eqprocessor.h"
 #include "audio/eqstate.h"
 #include "audio/dynamicrangesettings.h"
@@ -20,12 +21,9 @@ class AudioEngine;
 struct EqSessionSnapshot {
     unsigned long processId = 0;
     EqState eq{};
-    QString eqOutputDeviceId;
-    QString eqOutputDeviceName;
-    QString sinkDeviceId;
-    QString sinkDeviceName;
     VirtualSurroundSettings virtualSurround{};
     DynamicRangeSettings dynamicRange{};
+    AudioChainOrder audioChainOrder{};
     QColor labelColor;
     bool active = false;
     bool hasStoredGains = false;
@@ -48,17 +46,14 @@ public:
     void setEqStateReader(std::function<EqState()> reader);
     void setSurroundStateReader(std::function<VirtualSurroundSettings()> reader);
     void setDynamicsStateReader(std::function<DynamicRangeSettings()> reader);
+    void setAudioChainOrderReader(std::function<AudioChainOrder()> reader);
     void setDisplayNameProvider(std::function<QString(unsigned long)> provider);
 
     bool isAnyRunning() const;
     bool isRunning(unsigned long processId) const;
-    QVector<unsigned long> activeProcessIds() const;
     QHash<unsigned long, QColor> activeSessionColors() const;
     QVector<unsigned long> activeProcessIdsForLabelColor(const QColor &labelColor) const;
     QVector<ConfiguredEqSession> configuredTraySessions() const;
-
-    const EqSessionSnapshot *findSnapshot(unsigned long processId) const;
-    EqSessionSnapshot snapshotFor(unsigned long processId) const;
 
     bool enableForProcess(unsigned long processId);
     void disableForProcess(unsigned long processId);
@@ -69,16 +64,19 @@ public:
     void saveDraftForProcess(unsigned long processId,
                              const EqState &eqState,
                              const VirtualSurroundSettings &virtualSurround,
-                             const DynamicRangeSettings &dynamicRange);
+                             const DynamicRangeSettings &dynamicRange,
+                             const AudioChainOrder &audioChainOrder);
     void applySnapshotToUi(unsigned long processId,
                            const std::function<void(const EqState &)> &applyEq,
                            const std::function<void(const VirtualSurroundSettings &)> &applySurround,
-                           const std::function<void(const DynamicRangeSettings &)> &applyDynamics) const;
+                           const std::function<void(const DynamicRangeSettings &)> &applyDynamics,
+                           const std::function<void(const AudioChainOrder &)> &applyAudioChain) const;
 
     void pushLiveGainsForProcess(unsigned long processId);
     void scheduleLiveGainsForProcess(unsigned long processId);
     void pushLiveSurroundForProcess(unsigned long processId);
     void pushLiveDynamicsForProcess(unsigned long processId);
+    void pushLiveAudioChainForProcess(unsigned long processId);
 
     void onSessionStopped(unsigned long processId);
 
@@ -108,5 +106,6 @@ private:
     std::function<EqState()> m_eqStateReader;
     std::function<VirtualSurroundSettings()> m_surroundStateReader;
     std::function<DynamicRangeSettings()> m_dynamicsStateReader;
+    std::function<AudioChainOrder()> m_audioChainOrderReader;
     std::function<QString(unsigned long)> m_displayNameProvider;
 };

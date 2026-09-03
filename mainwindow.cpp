@@ -9,6 +9,7 @@
 #include "audio/audioendpointvolume.h"
 #include "audio/audiosessionvolume.h"
 #include "ui/appconstants.h"
+#include "ui/apppaths.h"
 #include "ui/audiodeviceresolver.h"
 #include "ui/eqcolorpalette.h"
 #include "ui/eqsessionmanager.h"
@@ -17,25 +18,41 @@
 #include "ui/presetpanelcontroller.h"
 #include "ui/parametriceqpanel.h"
 #include "ui/sessionlistcontroller.h"
+#include "ui/audiochaindialog.h"
 #include "ui/settingsdialog.h"
 #include "ui/setupdialog.h"
 #include "ui/singleinstanceserver.h"
+#include "ui/slidervaluetip.h"
 #include "ui/spectrumwidget.h"
 #include "ui/soundmoddialog.h"
 #include "ui/traycontroller.h"
+#include "ui/updatechecker.h"
 
+#include <QAbstractSpinBox>
+#include <QAction>
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QEvent>
 #include <QFont>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHideEvent>
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QScrollBar>
 #include <QShowEvent>
 #include <QStackedWidget>
+#include <QTextBrowser>
+#include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -77,6 +94,38 @@ QString loudnessTargetLabelForAmount(int amount)
     return QStringLiteral("%1 LUFS").arg(static_cast<int>(std::lround(targetLufs)));
 }
 
+bool isEqHistoryShortcutWindow(const QObject *watched, const QWidget *mainWindow)
+{
+    const auto *widget = qobject_cast<const QWidget *>(watched);
+    return widget && mainWindow && widget->window() == mainWindow;
+}
+
+bool isEqUndoShortcut(const QKeyEvent *key)
+{
+    if (!key || key->isAutoRepeat() || !key->modifiers().testFlag(Qt::ControlModifier)
+        || key->modifiers().testFlag(Qt::AltModifier) || key->modifiers().testFlag(Qt::ShiftModifier)) {
+        return false;
+    }
+    if (key->matches(QKeySequence::Undo)) {
+        return true;
+    }
+    return key->nativeVirtualKey() == 0x5A; // VK_Z, layout-independent
+}
+
+bool isEqRedoShortcut(const QKeyEvent *key)
+{
+    if (!key || key->isAutoRepeat() || !key->modifiers().testFlag(Qt::ControlModifier)
+        || key->modifiers().testFlag(Qt::AltModifier)) {
+        return false;
+    }
+    const bool shift = key->modifiers().testFlag(Qt::ShiftModifier);
+    if (!shift && (key->matches(QKeySequence::Redo) || key->key() == Qt::Key_Y)) {
+        return true;
+    }
+    const quint32 vk = key->nativeVirtualKey();
+    return (!shift && vk == 0x59) || (shift && vk == 0x5A); // VK_Y or Ctrl+Shift+Z
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -90,15 +139,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->presetsLayout->setStretch(0, 1);
     ui->presetsLayout->setStretch(1, 0);
 
-    ui->horizontalLayout_3->setContentsMargins(0, 4, 0, 0);
-    ui->horizontalLayout_3->setSpacing(8);
-    for (QPushButton *btn : {ui->enableEqButton, ui->disableEqButton, ui->resetBandsButton}) {
-        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    }
-
     setupSurroundUi();
     setupDynamicsUi();
-    setupEqControls();
     restructureLayout();
 
     m_spectrumWidget->setCapture(&m_spectrumCapture);
@@ -115,6 +157,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->logTextEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     ui->logTextEdit->setPlaceholderText(
         QStringLiteral("DSP verification and app log — select and copy (Ctrl+C)"));
+    ui->logTextEdit->setUndoRedoEnabled(false);
 
     showDspVerificationInLog();
 
@@ -137,8 +180,23 @@ MainWindow::MainWindow(QWidget *parent)
         slider->setMinimumHeight(120);
         slider->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         slider->setValue(0);
-        connect(slider, &QSlider::valueChanged, this, [this](int) {
+        installSliderValueTip(slider, [](int value) { return formatSignedDb(value); });
+        connect(slider, &QSlider::valueChanged, this, [this, slider](int) {
             if (m_loadingSliders) {
+                return;
+            }
+            if (slider->isSliderDown()) {
+                beginUserEqEdit();
+            } else {
+                beginUserEqEdit();
+                markSimpleEqEdited();
+                if (m_eqSessionManager) {
+                    const unsigned long pid = m_sessionList ? m_sessionList->selectedProcessId() : 0UL;
+                    if (pid != 0) {
+                        m_eqSessionManager->scheduleLiveGainsForProcess(pid);
+                    }
+                }
+                endUserEqEdit();
                 return;
             }
             markSimpleEqEdited();
@@ -150,6 +208,9 @@ MainWindow::MainWindow(QWidget *parent)
                 return;
             }
             m_eqSessionManager->scheduleLiveGainsForProcess(pid);
+        });
+        connect(slider, &QSlider::sliderReleased, this, [this]() {
+            endUserEqEdit();
         });
     }
 
@@ -164,7 +225,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_masterSlider->setMinimumWidth(24);
     m_masterSlider->setMinimumHeight(120);
     m_masterSlider->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-    m_masterSlider->setToolTip(QStringLiteral("Shift all bands together"));
+    installSliderValueTip(m_masterSlider, [](int value) {
+        return QStringLiteral("Shift all bands together\n%1").arg(formatSignedDb(value));
+    });
 
     auto *masterLabel = new QLabel(QStringLiteral("All"), ui->eqGroup);
     masterLabel->setAlignment(Qt::AlignCenter);
@@ -174,6 +237,9 @@ MainWindow::MainWindow(QWidget *parent)
     ui->horizontalLayout->insertLayout(0, masterColumn);
 
     connect(m_masterSlider, &QSlider::valueChanged, this, &MainWindow::onMasterSliderChanged);
+    connect(m_masterSlider, &QSlider::sliderReleased, this, [this]() {
+        endUserEqEdit();
+    });
     for (int i = 0; i < ui->horizontalLayout->count(); ++i) {
         QLayoutItem *item = ui->horizontalLayout->itemAt(i);
         if (item && item->layout()) {
@@ -211,12 +277,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupEqModeUi();
 
+    ui->runningAppsLayout->setStretch(0, 0);
     ui->runningAppsLayout->setStretch(1, 1);
 
-    m_sessionList = new SessionListController(ui->appListView,
-                                              ui->runningAppsCountLabel,
-                                              ui->emptyStateLabel,
-                                              this);
+    m_sessionList = new SessionListController(ui->appListView, ui->runningAppsCountLabel, this);
     connect(m_sessionList, &SessionListController::selectionChanged, this, [this]() {
         syncSlidersToSelection();
         updateEqControlState();
@@ -260,6 +324,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_eqSessionManager->setEqStateReader([this]() { return readEqState(); });
     m_eqSessionManager->setSurroundStateReader([this]() { return readVirtualSurroundState(); });
     m_eqSessionManager->setDynamicsStateReader([this]() { return readDynamicRangeState(); });
+    m_eqSessionManager->setAudioChainOrderReader([this]() { return readAudioChainOrder(); });
     m_eqSessionManager->setDisplayNameProvider([this](unsigned long pid) {
         return m_sessionList ? m_sessionList->displayNameForPid(pid) : QString();
     });
@@ -293,7 +358,40 @@ MainWindow::MainWindow(QWidget *parent)
         if (applied.filterCount > 0) {
             applied.advanced = true;
         }
+        beginUserEqEdit();
         applyEqStateToUi(applied);
+        endUserEqEdit();
+    });
+    m_presetPanel->setSurroundStateReader([this]() { return readVirtualSurroundState(); });
+    m_presetPanel->setSurroundStateApplier([this](const VirtualSurroundSettings &settings) {
+        m_loadingSliders = true;
+        applySurroundToUi(settings);
+        m_loadingSliders = false;
+        applySurroundToEngine();
+    });
+    m_presetPanel->setDynamicsStateReader([this]() { return readDynamicRangeState(); });
+    m_presetPanel->setDynamicsStateApplier([this](const DynamicRangeSettings &settings) {
+        m_loadingSliders = true;
+        applyDynamicRangeToUi(settings);
+        m_loadingSliders = false;
+        applyDynamicRangeToEngine();
+    });
+    m_presetPanel->setAudioChainOrderReader([this]() { return readAudioChainOrder(); });
+    m_presetPanel->setAudioChainOrderApplier([this](const AudioChainOrder &order) {
+        applyAudioChainToUi(order);
+        applyAudioChainToEngine();
+    });
+    connect(m_presetPanel, &PresetPanelController::logMessage, this, &MainWindow::appendLog);
+    connect(m_presetPanel, &PresetPanelController::errorOccurred, this, &MainWindow::showCopyableError);
+    connect(m_presetPanel, &PresetPanelController::presetApplied, this, [this](const EqPreset &preset) {
+        if (preset.hasEq) {
+            resetMasterSlider();
+            persistEqUiMode();
+            if (preset.eq.advanced || preset.eq.filterCount > 0) {
+                appendLog(QStringLiteral("INFO"),
+                          QStringLiteral("Advanced preset loaded (Advanced mode): %1").arg(preset.name));
+            }
+        }
         if (!m_eqSessionManager || !m_sessionList) {
             return;
         }
@@ -301,37 +399,24 @@ MainWindow::MainWindow(QWidget *parent)
         if (pid == 0) {
             return;
         }
-        m_eqSessionManager->saveDraftForProcess(pid, applied, readVirtualSurroundState(),
-                                                readDynamicRangeState());
-    });
-    connect(m_presetPanel, &PresetPanelController::logMessage, this, &MainWindow::appendLog);
-    connect(m_presetPanel, &PresetPanelController::errorOccurred, this, &MainWindow::showCopyableError);
-    connect(m_presetPanel, &PresetPanelController::presetApplied, this, [this](const EqPreset &preset) {
-        applyEqStateToUi(preset.eq);
-        resetMasterSlider();
-        persistEqUiMode();
-        if (m_eqSessionManager && m_sessionList) {
-            const unsigned long pid = m_sessionList->selectedProcessId();
-            if (pid != 0) {
-                m_eqSessionManager->scheduleLiveGainsForProcess(pid);
-            }
-        }
-        if (preset.eq.advanced || preset.eq.filterCount > 0) {
-            appendLog(QStringLiteral("INFO"),
-                      QStringLiteral("Advanced preset loaded (Advanced mode): %1").arg(preset.name));
+        m_eqSessionManager->saveDraftForProcess(pid, readEqState(), readVirtualSurroundState(),
+                                                readDynamicRangeState(),
+                                                readAudioChainOrder());
+        if (preset.hasEq) {
+            m_eqSessionManager->scheduleLiveGainsForProcess(pid);
         }
     });
     m_presetPanel->refreshList();
 
-    connect(ui->enableEqButton, &QPushButton::clicked, this, &MainWindow::onEnableEq);
-    connect(ui->disableEqButton, &QPushButton::clicked, this, &MainWindow::onDisableEq);
-    connect(m_disableAllButton, &QPushButton::clicked, this, &MainWindow::onDisableAllEq);
+    connect(ui->disableAllButton, &QPushButton::clicked, this, &MainWindow::onDisableAllEq);
     connect(ui->resetBandsButton, &QPushButton::clicked, this, &MainWindow::onResetClicked);
     connect(m_resetSurroundButton, &QPushButton::clicked, this, &MainWindow::onResetSurroundClicked);
     connect(m_resetDynamicsButton, &QPushButton::clicked, this, &MainWindow::onResetDynamicsClicked);
-    connect(m_applySurroundButton, &QPushButton::clicked, this, &MainWindow::onApplySurroundClicked);
     connect(m_surroundEnableCheckBox, &QCheckBox::toggled, this, [this](bool) {
         updateSurroundControlsEnabled();
+        if (m_loadingSliders || !m_eqSessionManager) {
+            return;
+        }
         applySurroundToEngine();
         saveSurroundSettings();
     });
@@ -370,6 +455,9 @@ MainWindow::MainWindow(QWidget *parent)
     if (m_dynamicsEnableCheckBox) {
         connect(m_dynamicsEnableCheckBox, &QCheckBox::toggled, this, [this](bool) {
             updateDynamicsControlsEnabled();
+            if (m_loadingSliders || !m_eqSessionManager) {
+                return;
+            }
             applyDynamicRangeToEngine();
             saveDynamicRangeSettings();
         });
@@ -399,6 +487,7 @@ MainWindow::MainWindow(QWidget *parent)
         });
     }
     connect(ui->actionSettings, &QAction::triggered, this, &MainWindow::onSettingsClicked);
+    connect(ui->actionAudioChain, &QAction::triggered, this, &MainWindow::onAudioChainClicked);
     connect(ui->actionKeybinds, &QAction::triggered, this, &MainWindow::onKeybindsClicked);
     connect(ui->actionQuit, &QAction::triggered, this, &MainWindow::onQuitApp);
 
@@ -409,9 +498,19 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     m_settingsStore.load();
-    applySettings(m_settingsStore.settings());
 
-    if (!m_settingsStore.settings().setupCompleted) {
+    AppSettings loadedSettings = m_settingsStore.settings();
+    const bool alreadyConfigured = !loadedSettings.routingSinkDeviceId.isEmpty()
+                                   && !loadedSettings.eqOutputDeviceId.isEmpty();
+    const bool skipWelcome = loadedSettings.setupCompleted
+                             || alreadyConfigured
+                             || AppPaths::hasExistingSettingsFile()
+                             || AppPaths::welcomeMarkerExists();
+    AppPaths::markWelcomeShown();
+    loadedSettings.setupCompleted = true;
+    applySettings(loadedSettings);
+
+    if (!skipWelcome) {
         SetupDialog setupDialog(m_settingsStore.settings(), this);
         if (setupDialog.exec() == QDialog::Accepted) {
             applySettings(setupDialog.resultSettings());
@@ -470,6 +569,22 @@ void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
     applyKeybindSettings();
+    updateSessionListAutoRefresh();
+    refreshSessionList();
+}
+
+void MainWindow::hideEvent(QHideEvent *event)
+{
+    QMainWindow::hideEvent(event);
+    updateSessionListAutoRefresh();
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event && event->type() == QEvent::WindowStateChange) {
+        updateSessionListAutoRefresh();
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -484,84 +599,101 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 void MainWindow::setupSurroundUi()
 {
-    m_surroundGroup = new QGroupBox(QStringLiteral("Virtual Surround (Headphones)"), this);
+    m_surroundGroup = new QGroupBox(QStringLiteral("Virtual Surround"), this);
     m_surroundGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     auto *groupLayout = new QVBoxLayout(m_surroundGroup);
+    groupLayout->setContentsMargins(8, 8, 8, 8);
+    groupLayout->setSpacing(6);
 
     auto *headerRow = new QHBoxLayout();
-    m_surroundEnableCheckBox = new QCheckBox(QStringLiteral("Enable virtual surround"), m_surroundGroup);
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(6);
+    m_surroundEnableCheckBox = new QCheckBox(QStringLiteral("Enable HRTF"), m_surroundGroup);
+    m_surroundEnableCheckBox->setToolTip(
+        QStringLiteral("Upmix stereo apps and render them with HRTF for headphones."));
     m_resetSurroundButton = new QPushButton(QStringLiteral("Reset"), m_surroundGroup);
-    m_applySurroundButton = new QPushButton(QStringLiteral("Apply"), m_surroundGroup);
+    m_resetSurroundButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     headerRow->addWidget(m_surroundEnableCheckBox);
+    headerRow->addStretch(1);
     headerRow->addWidget(m_resetSurroundButton);
-    headerRow->addWidget(m_applySurroundButton);
-    headerRow->addStretch();
     groupLayout->addLayout(headerRow);
 
-    auto *helper = new QLabel(QStringLiteral("Stereo apps are upmixed and rendered with HRTF for headphones."),
-                              m_surroundGroup);
-    helper->setWordWrap(true);
-    groupLayout->addWidget(helper);
-
-    auto *presetRow = new QHBoxLayout();
-    presetRow->addWidget(new QLabel(QStringLiteral("Preset"), m_surroundGroup));
+    auto *controlsRow = new QHBoxLayout();
+    controlsRow->setContentsMargins(0, 0, 0, 0);
+    controlsRow->setSpacing(8);
+    controlsRow->addWidget(new QLabel(QStringLiteral("Preset"), m_surroundGroup));
     m_hrtfPresetCombo = new QComboBox(m_surroundGroup);
     m_hrtfPresetCombo->addItem(QStringLiteral("Default"), static_cast<int>(HrtfPresetId::Default));
     m_hrtfPresetCombo->addItem(QStringLiteral("Wide"), static_cast<int>(HrtfPresetId::Wide));
     m_hrtfPresetCombo->addItem(QStringLiteral("Close"), static_cast<int>(HrtfPresetId::Close));
-    presetRow->addWidget(m_hrtfPresetCombo, 1);
-    groupLayout->addLayout(presetRow);
+    m_hrtfPresetCombo->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    controlsRow->addWidget(m_hrtfPresetCombo, 1);
 
-    auto *strengthRow = new QHBoxLayout();
-    strengthRow->addWidget(new QLabel(QStringLiteral("Strength"), m_surroundGroup));
+    controlsRow->addWidget(new QLabel(QStringLiteral("Strength"), m_surroundGroup));
     m_hrtfStrengthSlider = new QSlider(Qt::Horizontal, m_surroundGroup);
     m_hrtfStrengthSlider->setRange(0, 100);
     m_hrtfStrengthSlider->setValue(75);
+    installSliderValueTip(m_hrtfStrengthSlider, [](int value) {
+        return QStringLiteral("%1%").arg(value);
+    });
     m_hrtfStrengthValueLabel = new QLabel(QStringLiteral("75%"), m_surroundGroup);
-    m_hrtfStrengthValueLabel->setMinimumWidth(40);
-    strengthRow->addWidget(m_hrtfStrengthSlider, 1);
-    strengthRow->addWidget(m_hrtfStrengthValueLabel);
-    groupLayout->addLayout(strengthRow);
+    m_hrtfStrengthValueLabel->setMinimumWidth(36);
+    m_hrtfStrengthValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    controlsRow->addWidget(m_hrtfStrengthSlider, 2);
+    controlsRow->addWidget(m_hrtfStrengthValueLabel);
+    groupLayout->addLayout(controlsRow);
 
     struct SpeakerCell {
         SurroundProcessor::Channel channel;
         const char *label;
+        const char *tip;
         int row;
         int column;
     };
 
     const SpeakerCell cells[] = {
-        {SurroundProcessor::FrontCenter, "FC", 0, 1},
-        {SurroundProcessor::FrontLeft, "FL", 1, 0},
-        {SurroundProcessor::FrontRight, "FR", 1, 2},
-        {SurroundProcessor::SideLeft, "SL", 2, 0},
-        {SurroundProcessor::SideRight, "SR", 2, 2},
-        {SurroundProcessor::BackLeft, "RL", 3, 0},
-        {SurroundProcessor::Lfe, "LFE", 3, 1},
-        {SurroundProcessor::BackRight, "RR", 3, 2},
+        {SurroundProcessor::FrontCenter, "Front C", "Front center", 0, 1},
+        {SurroundProcessor::FrontLeft, "Front L", "Front left", 1, 0},
+        {SurroundProcessor::FrontRight, "Front R", "Front right", 1, 2},
+        {SurroundProcessor::SideLeft, "Side L", "Side left", 2, 0},
+        {SurroundProcessor::SideRight, "Side R", "Side right", 2, 2},
+        {SurroundProcessor::BackLeft, "Rear L", "Rear left", 3, 0},
+        {SurroundProcessor::Lfe, "LFE", "Subwoofer (disabled for headphones)", 3, 1},
+        {SurroundProcessor::BackRight, "Rear R", "Rear right", 3, 2},
     };
 
     auto *grid = new QGridLayout();
-    grid->setHorizontalSpacing(8);
-    grid->setVerticalSpacing(6);
+    grid->setContentsMargins(0, 2, 0, 0);
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(4);
     grid->setColumnStretch(0, 1);
     grid->setColumnStretch(1, 1);
     grid->setColumnStretch(2, 1);
+
+    auto *youLabel = new QLabel(QStringLiteral("You"), m_surroundGroup);
+    youLabel->setAlignment(Qt::AlignCenter);
+    QPalette youPalette = youLabel->palette();
+    youPalette.setColor(QPalette::WindowText, youPalette.color(QPalette::PlaceholderText));
+    youLabel->setPalette(youPalette);
+    grid->addWidget(youLabel, 2, 1, Qt::AlignCenter);
 
     for (const SpeakerCell &cell : cells) {
         auto *cellWidget = new QWidget(m_surroundGroup);
         auto *cellLayout = new QVBoxLayout(cellWidget);
         cellLayout->setContentsMargins(0, 0, 0, 0);
-        cellLayout->setSpacing(2);
+        cellLayout->setSpacing(1);
 
         auto *label = new QLabel(QString::fromLatin1(cell.label), cellWidget);
         label->setAlignment(Qt::AlignHCenter);
+        label->setToolTip(QString::fromLatin1(cell.tip));
 
         auto *spin = new QSpinBox(cellWidget);
         spin->setRange(0, 100);
         spin->setValue(cell.channel == SurroundProcessor::Lfe ? 0 : 50);
-        spin->setMinimumWidth(64);
+        spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        spin->setMaximumWidth(48);
         spin->setAlignment(Qt::AlignCenter);
+        spin->setToolTip(QString::fromLatin1(cell.tip));
         if (cell.channel == SurroundProcessor::Lfe) {
             spin->setEnabled(false);
             spin->setToolTip(QStringLiteral("LFE is disabled for headphone virtual surround to prevent bass rumble."));
@@ -569,7 +701,15 @@ void MainWindow::setupSurroundUi()
 
         cellLayout->addWidget(label);
         cellLayout->addWidget(spin, 0, Qt::AlignHCenter);
-        grid->addWidget(cellWidget, cell.row, cell.column, Qt::AlignCenter);
+
+        Qt::Alignment align = Qt::AlignCenter;
+        if (cell.row == 3) {
+            align = Qt::AlignHCenter | Qt::AlignTop;
+            if (cell.channel == SurroundProcessor::Lfe) {
+                cellLayout->setContentsMargins(0, 24, 0, 0);
+            }
+        }
+        grid->addWidget(cellWidget, cell.row, cell.column, align);
 
         m_surroundSpins[static_cast<size_t>(cell.channel)] = spin;
     }
@@ -582,13 +722,19 @@ void MainWindow::setupDynamicsUi()
     m_dynamicsGroup = new QGroupBox(QStringLiteral("Dynamics"), this);
     m_dynamicsGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     auto *groupLayout = new QVBoxLayout(m_dynamicsGroup);
+    groupLayout->setContentsMargins(8, 8, 8, 8);
+    groupLayout->setSpacing(6);
 
     m_dynamicsEnableCheckBox = new QCheckBox(QStringLiteral("Enable dynamics processing"), m_dynamicsGroup);
     m_dynamicsEnableCheckBox->setToolTip(
         QStringLiteral("Enables dynamic range shaping and loudness normalization for the selected app."));
     m_resetDynamicsButton = new QPushButton(QStringLiteral("Reset"), m_dynamicsGroup);
+    m_resetDynamicsButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     auto *headerRow = new QHBoxLayout();
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(6);
     headerRow->addWidget(m_dynamicsEnableCheckBox);
+    headerRow->addStretch(1);
     headerRow->addWidget(m_resetDynamicsButton);
     groupLayout->addLayout(headerRow);
 
@@ -598,6 +744,9 @@ void MainWindow::setupDynamicsUi()
     m_dynamicsAmountSlider = new QSlider(Qt::Horizontal, m_dynamicsGroup);
     m_dynamicsAmountSlider->setRange(DynamicRangeSettings::kAmountMin, DynamicRangeSettings::kAmountMax);
     m_dynamicsAmountSlider->setValue(DynamicRangeSettings::kAmountDefault);
+    installSliderValueTip(m_dynamicsAmountSlider, [](int value) {
+        return QStringLiteral("%1 \u2014 %2").arg(value).arg(dynamicsModeLabelForAmount(value));
+    });
     auto *tightLabel = new QLabel(QStringLiteral("Tight"), m_dynamicsGroup);
     tightLabel->setToolTip(QStringLiteral("Extra-tight settings add stronger peak control for maximum consistency."));
     m_dynamicsModeLabel = new QLabel(dynamicsModeLabelForAmount(DynamicRangeSettings::kAmountDefault), m_dynamicsGroup);
@@ -615,9 +764,12 @@ void MainWindow::setupDynamicsUi()
     m_loudnessAmountSlider = new QSlider(Qt::Horizontal, m_dynamicsGroup);
     m_loudnessAmountSlider->setRange(DynamicRangeSettings::kLoudnessMin, DynamicRangeSettings::kLoudnessMax);
     m_loudnessAmountSlider->setValue(DynamicRangeSettings::kLoudnessDefault);
-    m_loudnessAmountSlider->setToolTip(
+    m_loudnessAmountSlider->setStatusTip(
         QStringLiteral("Normalizes overall loudness toward a target level. "
                        "Helps quiet games and videos without changing peak-vs-average shape."));
+    installSliderValueTip(m_loudnessAmountSlider, [](int value) {
+        return QStringLiteral("%1 \u2014 %2").arg(value).arg(loudnessTargetLabelForAmount(value));
+    });
     auto *loudLabel = new QLabel(QStringLiteral("Loud"), m_dynamicsGroup);
     loudLabel->setToolTip(QStringLiteral("Stronger normalization toward a louder target level."));
     m_loudnessTargetLabel = new QLabel(loudnessTargetLabelForAmount(DynamicRangeSettings::kLoudnessDefault), m_dynamicsGroup);
@@ -628,15 +780,6 @@ void MainWindow::setupDynamicsUi()
     loudnessRow->addWidget(loudLabel);
     loudnessRow->addWidget(m_loudnessTargetLabel);
     groupLayout->addLayout(loudnessRow);
-}
-
-void MainWindow::setupEqControls()
-{
-    m_disableAllButton = new QPushButton(QStringLiteral("Disable all"), ui->eqGroup);
-    m_disableAllButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    ui->horizontalLayout_3->addWidget(m_disableAllButton);
-
-    ui->disableEqButton->setText(QStringLiteral("Disable for app"));
 }
 
 void MainWindow::setupEqModeUi()
@@ -659,6 +802,7 @@ void MainWindow::setupEqModeUi()
     modeRow->addWidget(m_simpleModeButton);
     modeRow->addWidget(m_advancedModeButton);
     modeRow->addStretch(1);
+    modeRow->addWidget(ui->resetBandsButton);
     ui->eqPanelLayout->insertLayout(0, modeRow);
 
     m_eqModeStack = new QStackedWidget(ui->eqGroup);
@@ -688,11 +832,15 @@ void MainWindow::setupEqModeUi()
     ui->eqPanelLayout->insertWidget(1, m_eqModeStack, 1);
     ui->eqPanelLayout->setStretch(0, 0);
     ui->eqPanelLayout->setStretch(1, 1);
-    ui->eqPanelLayout->setStretch(2, 0);
 
     connect(m_simpleModeButton, &QPushButton::clicked, this, &MainWindow::onEqModeToggled);
     connect(m_advancedModeButton, &QPushButton::clicked, this, &MainWindow::onEqModeToggled);
     connect(m_parametricPanel, &ParametricEqPanel::eqChanged, this, &MainWindow::onParametricEqChanged);
+    connect(m_parametricPanel, &ParametricEqPanel::eqEditStarted, this, &MainWindow::beginUserEqEdit);
+    connect(m_parametricPanel, &ParametricEqPanel::eqEditEnded, this, &MainWindow::endUserEqEdit);
+    connect(m_parametricPanel, &ParametricEqPanel::resetRequested, this, &MainWindow::onResetClicked);
+    setupEqHistory();
+    setupUpdateChecker();
 }
 
 void MainWindow::markSimpleEqEdited()
@@ -753,6 +901,11 @@ bool MainWindow::eqStatesMatch(const EqState &a, const EqState &b)
 {
     if (a.filterCount != b.filterCount) {
         return false;
+    }
+    for (int i = 0; i < EqState::kBandCount; ++i) {
+        if (std::fabs(a.gainsDb[static_cast<size_t>(i)] - b.gainsDb[static_cast<size_t>(i)]) > 0.05f) {
+            return false;
+        }
     }
     for (int i = 0; i < a.filterCount; ++i) {
         const EqFilter &fa = a.filters[static_cast<size_t>(i)];
@@ -867,6 +1020,7 @@ void MainWindow::onEqModeToggled()
 
     setEqUiModeAdvanced(wantAdvanced, true);
     persistEqUiMode();
+    m_lastEqSnapshot = readEqState();
 
     if (m_eqSessionManager && m_sessionList) {
         const unsigned long pid = m_sessionList->selectedProcessId();
@@ -899,6 +1053,330 @@ void MainWindow::onParametricEqChanged()
         if (pid != 0) {
             m_eqSessionManager->scheduleLiveGainsForProcess(pid);
         }
+    }
+    if (!m_applyingEqHistory) {
+        m_lastEqSnapshot = readEqState();
+    }
+}
+
+void MainWindow::setupEqHistory()
+{
+    auto *editMenu = new QMenu(QStringLiteral("Edit"), this);
+    menuBar()->addMenu(editMenu);
+
+    m_undoAction = editMenu->addAction(QStringLiteral("Undo"));
+    m_undoAction->setShortcut(QKeySequence::Undo);
+    m_undoAction->setShortcutContext(Qt::WindowShortcut);
+    connect(m_undoAction, &QAction::triggered, this, &MainWindow::onUndoEq);
+
+    m_redoAction = editMenu->addAction(QStringLiteral("Redo"));
+    m_redoAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Y),
+                                QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z),
+                                QKeySequence::Redo});
+    m_redoAction->setShortcutContext(Qt::WindowShortcut);
+    connect(m_redoAction, &QAction::triggered, this, &MainWindow::onRedoEq);
+    addAction(m_undoAction);
+    addAction(m_redoAction);
+    qApp->installEventFilter(this);
+
+    m_updateAction = menuBar()->addAction(QStringLiteral("Update"));
+    connect(m_updateAction, &QAction::triggered, this, &MainWindow::onUpdateClicked);
+    m_changelogAction = menuBar()->addAction(QStringLiteral("Changelog"));
+    connect(m_changelogAction, &QAction::triggered, this, &MainWindow::onChangelogClicked);
+
+    m_lastEqSnapshot = readEqState();
+    updateEqHistoryActions();
+}
+
+void MainWindow::setupUpdateChecker()
+{
+    if (!m_updateAction) {
+        return;
+    }
+
+    m_updateChecker = new UpdateChecker(this);
+    connect(m_updateChecker, &UpdateChecker::updateAvailable, this,
+            [this](const QString &version, const QUrl &installerUrl) {
+                m_pendingInstallerUrl = installerUrl;
+                m_updating = false;
+                m_updateAction->setText(QStringLiteral("Update"));
+                m_updateAction->setEnabled(true);
+                if (m_tray) {
+                    m_tray->showUpdateAvailableMessage(version);
+                }
+                appendLog(QStringLiteral("INFO"),
+                          QStringLiteral("Update available: %1").arg(version));
+            });
+    connect(m_updateChecker, &UpdateChecker::upToDate, this, [this]() {
+        m_pendingInstallerUrl.clear();
+        m_updating = false;
+        m_updateAction->setText(QStringLiteral("Up to date"));
+        m_updateAction->setEnabled(false);
+    });
+    connect(m_updateChecker, &UpdateChecker::checkFailed, this, [this](const QString &error) {
+        m_updating = false;
+        m_updateAction->setText(QStringLiteral("Update"));
+        m_updateAction->setEnabled(true);
+        appendLog(QStringLiteral("WARN"), QStringLiteral("Update check failed: %1").arg(error));
+    });
+    connect(m_updateChecker, &UpdateChecker::downloadProgress, this,
+            [this](qint64 received, qint64 total) {
+                if (!m_updateAction || total <= 0) {
+                    return;
+                }
+                const int percent = static_cast<int>((received * 100) / total);
+                m_updateAction->setText(QStringLiteral("Updating %1%").arg(percent));
+            });
+    connect(m_updateChecker, &UpdateChecker::installReady, this, [this](const QString &installerPath) {
+        QString error;
+        if (!UpdateChecker::launchInstaller(installerPath, &error)) {
+            m_updating = false;
+            m_updateAction->setText(QStringLiteral("Update"));
+            m_updateAction->setEnabled(true);
+            appendLog(QStringLiteral("WARN"), error);
+            return;
+        }
+        appendLog(QStringLiteral("INFO"), QStringLiteral("Installing update…"));
+        onQuitApp();
+    });
+    connect(m_updateChecker, &UpdateChecker::updateFailed, this, [this](const QString &error) {
+        m_updating = false;
+        m_updateAction->setText(QStringLiteral("Update"));
+        m_updateAction->setEnabled(true);
+        appendLog(QStringLiteral("WARN"), QStringLiteral("Update failed: %1").arg(error));
+    });
+    if (m_tray) {
+        connect(m_tray, &TrayController::updateRequested, this, &MainWindow::onUpdateClicked);
+    }
+
+    connect(m_updateChecker, &UpdateChecker::changelogReady, this, [this](const QString &markdown) {
+        const QString current = UpdateChecker::currentVersion();
+        const QString since = m_changelogAutoShow ? m_changelogSinceVersion : QString();
+        QString notes = UpdateChecker::extractRelevantChangelog(markdown, since, current);
+        if (notes.isEmpty()) {
+            notes = QStringLiteral("No changelog entries found for this version.");
+        }
+        if (m_changelogAction) {
+            m_changelogAction->setEnabled(true);
+        }
+        showChangelogDialog(notes);
+        if (m_changelogAutoShow) {
+            markChangelogShown();
+            m_changelogAutoShow = false;
+        }
+    });
+    connect(m_updateChecker, &UpdateChecker::changelogFailed, this, [this](const QString &error) {
+        const bool autoShow = m_changelogAutoShow;
+        m_changelogAutoShow = false;
+        if (m_changelogAction) {
+            m_changelogAction->setEnabled(true);
+        }
+        appendLog(QStringLiteral("WARN"), QStringLiteral("Changelog download failed: %1").arg(error));
+        if (!autoShow) {
+            showCopyableError(QStringLiteral("Changelog"), error);
+        }
+    });
+
+    AppSettings settings = m_settingsStore.settings();
+    const QString current = UpdateChecker::currentVersion();
+    if (settings.lastShownChangelogVersion.isEmpty()) {
+        settings.lastShownChangelogVersion = current;
+        m_settingsStore.setSettings(settings);
+        m_settingsStore.save();
+    } else if (settings.lastShownChangelogVersion != current) {
+        m_changelogAutoShow = true;
+        m_changelogSinceVersion = settings.lastShownChangelogVersion;
+        if (m_changelogAction) {
+            m_changelogAction->setEnabled(false);
+        }
+        QTimer::singleShot(1800, this, [this]() {
+            if (m_updateChecker) {
+                m_updateChecker->fetchChangelog();
+            }
+        });
+    }
+
+    QTimer::singleShot(1500, this, [this]() {
+        if (m_updateChecker) {
+            m_updateChecker->check();
+        }
+    });
+}
+
+void MainWindow::onUpdateClicked()
+{
+    if (m_updating) {
+        return;
+    }
+    if (m_pendingInstallerUrl.isValid() && m_updateChecker) {
+        m_updating = true;
+        m_updateAction->setText(QStringLiteral("Updating…"));
+        m_updateAction->setEnabled(false);
+        m_updateChecker->startUpdate(m_pendingInstallerUrl);
+        return;
+    }
+    if (m_updateChecker) {
+        m_updateAction->setText(QStringLiteral("Update"));
+        m_updateAction->setEnabled(true);
+        m_updateChecker->check();
+    }
+}
+
+void MainWindow::onChangelogClicked()
+{
+    if (!m_updateChecker) {
+        return;
+    }
+    m_changelogAutoShow = false;
+    m_changelogSinceVersion.clear();
+    if (m_changelogAction) {
+        m_changelogAction->setEnabled(false);
+    }
+    m_updateChecker->fetchChangelog();
+}
+
+void MainWindow::markChangelogShown()
+{
+    AppSettings settings = m_settingsStore.settings();
+    settings.lastShownChangelogVersion = UpdateChecker::currentVersion();
+    m_settingsStore.setSettings(settings);
+    m_settingsStore.save();
+}
+
+void MainWindow::showChangelogDialog(const QString &markdown)
+{
+    auto *dialog = new QDialog(this);
+    dialog->setWindowTitle(QStringLiteral("What's new in CurvioEQ %1").arg(UpdateChecker::currentVersion()));
+    dialog->resize(560, 480);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *layout = new QVBoxLayout(dialog);
+    auto *browser = new QTextBrowser(dialog);
+    browser->setOpenExternalLinks(true);
+    browser->setMarkdown(markdown);
+    layout->addWidget(browser, 1);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::close);
+    layout->addWidget(buttons);
+
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
+        const auto *key = static_cast<QKeyEvent *>(event);
+        if (isEqHistoryShortcutWindow(watched, this)) {
+            const bool undo = isEqUndoShortcut(key);
+            const bool redo = !undo && isEqRedoShortcut(key);
+            if (undo || redo) {
+                if (event->type() == QEvent::ShortcutOverride) {
+                    event->accept();
+                    return true;
+                }
+                if (undo) {
+                    onUndoEq();
+                } else {
+                    onRedoEq();
+                }
+                return true;
+            }
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::beginUserEqEdit()
+{
+    if (m_loadingSliders || m_applyingEqHistory || m_eqHistoryCoalescing) {
+        return;
+    }
+    m_eqHistory.push(m_lastEqSnapshot);
+    m_eqHistoryCoalescing = true;
+    updateEqHistoryActions();
+}
+
+void MainWindow::endUserEqEdit()
+{
+    if (!m_eqHistoryCoalescing) {
+        return;
+    }
+    m_eqHistoryCoalescing = false;
+    m_lastEqSnapshot = readEqState();
+    if (m_eqHistory.canUndo() && eqStatesMatch(m_eqHistory.undoTop(), m_lastEqSnapshot)) {
+        m_eqHistory.popUndo();
+    }
+    updateEqHistoryActions();
+}
+
+void MainWindow::applyEqHistoryState(const EqState &state)
+{
+    m_applyingEqHistory = true;
+    m_loadingSliders = true;
+
+    EqState applied = state;
+    if (m_eqUiModeAdvanced) {
+        applied.advanced = true;
+        if (applied.filterCount <= 0) {
+            applied = EqResponse::simpleToAdvanced(applied.gainsDb);
+            applied.advanced = true;
+        }
+        syncEqModeCachesFromState(applied);
+        if (m_parametricPanel) {
+            m_parametricPanel->setEqState(applied);
+        }
+        applyGainsToSliders(applied.gainsDb);
+    } else {
+        applied.advanced = false;
+        syncEqModeCachesFromState(applied);
+        applyGainsToSliders(applied.gainsDb);
+    }
+
+    m_loadingSliders = false;
+    m_lastEqSnapshot = readEqState();
+    m_eqHistoryCoalescing = false;
+    m_applyingEqHistory = false;
+
+    if (m_eqSessionManager && m_sessionList) {
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid != 0) {
+            m_eqSessionManager->saveDraftForProcess(pid,
+                                                    readEqState(),
+                                                    readVirtualSurroundState(),
+                                                    readDynamicRangeState(),
+                                                    readAudioChainOrder());
+        }
+    }
+    updateEqHistoryActions();
+}
+
+void MainWindow::onUndoEq()
+{
+    if (!m_eqHistory.canUndo() || m_applyingEqHistory || m_eqHistoryCoalescing) {
+        return;
+    }
+    applyEqHistoryState(m_eqHistory.undo(readEqState()));
+}
+
+void MainWindow::onRedoEq()
+{
+    if (!m_eqHistory.canRedo() || m_applyingEqHistory || m_eqHistoryCoalescing) {
+        return;
+    }
+    applyEqHistoryState(m_eqHistory.redo(readEqState()));
+}
+
+void MainWindow::updateEqHistoryActions()
+{
+    if (m_undoAction) {
+        m_undoAction->setEnabled(m_eqHistory.canUndo());
+    }
+    if (m_redoAction) {
+        m_redoAction->setEnabled(m_eqHistory.canRedo());
     }
 }
 
@@ -963,19 +1441,25 @@ void MainWindow::updateSurroundControlsEnabled()
     if (m_resetSurroundButton) {
         m_resetSurroundButton->setEnabled(enabled);
     }
-    if (m_applySurroundButton) {
-        m_applySurroundButton->setEnabled(enabled);
-    }
     if (m_hrtfPresetCombo) {
         m_hrtfPresetCombo->setEnabled(enabled);
     }
     if (m_hrtfStrengthSlider) {
         m_hrtfStrengthSlider->setEnabled(enabled);
     }
-    for (QSpinBox *spin : m_surroundSpins) {
-        if (spin) {
-            spin->setEnabled(enabled);
+    if (m_hrtfStrengthValueLabel) {
+        m_hrtfStrengthValueLabel->setEnabled(enabled);
+    }
+    for (int i = 0; i < SurroundProcessor::kChannelCount; ++i) {
+        QSpinBox *spin = m_surroundSpins[static_cast<size_t>(i)];
+        if (!spin) {
+            continue;
         }
+        if (i == SurroundProcessor::Lfe) {
+            spin->setEnabled(false);
+            continue;
+        }
+        spin->setEnabled(enabled);
     }
 }
 
@@ -1135,6 +1619,47 @@ void MainWindow::onResetDynamicsClicked()
     appendLog(QStringLiteral("INFO"), QStringLiteral("Dynamics settings reset to defaults"));
 }
 
+AudioChainOrder MainWindow::readAudioChainOrder() const
+{
+    return normalizeAudioChainOrder(m_audioChainOrder);
+}
+
+void MainWindow::applyAudioChainToUi(const AudioChainOrder &order)
+{
+    m_audioChainOrder = normalizeAudioChainOrder(order);
+}
+
+void MainWindow::applyAudioChainToEngine()
+{
+    if (!m_eqSessionManager || !m_sessionList) {
+        return;
+    }
+    const unsigned long pid = m_sessionList->selectedProcessId();
+    if (pid == 0) {
+        return;
+    }
+    m_eqSessionManager->pushLiveAudioChainForProcess(pid);
+}
+
+void MainWindow::saveAudioChainSettings()
+{
+    AppSettings settings = m_settingsStore.settings();
+    settings.audioChainOrder = readAudioChainOrder();
+    m_settingsStore.setSettings(settings);
+    m_settingsStore.save();
+}
+
+void MainWindow::onAudioChainClicked()
+{
+    AudioChainDialog dialog(readAudioChainOrder(), this);
+    connect(&dialog, &AudioChainDialog::orderChanged, this, [this](const AudioChainOrder &order) {
+        applyAudioChainToUi(order);
+        applyAudioChainToEngine();
+        saveAudioChainSettings();
+    });
+    dialog.exec();
+}
+
 void MainWindow::onResetSurroundClicked()
 {
     VirtualSurroundSettings settings;
@@ -1146,13 +1671,6 @@ void MainWindow::onResetSurroundClicked()
     applySurroundToEngine();
     saveSurroundSettings();
     appendLog(QStringLiteral("INFO"), QStringLiteral("Virtual surround speaker levels reset to 50"));
-}
-
-void MainWindow::onApplySurroundClicked()
-{
-    applySurroundToEngine();
-    saveSurroundSettings();
-    appendLog(QStringLiteral("INFO"), QStringLiteral("Virtual surround settings applied"));
 }
 
 void MainWindow::onRefreshClicked()
@@ -1179,6 +1697,7 @@ void MainWindow::refreshSessionList()
 
 void MainWindow::onResetClicked()
 {
+    beginUserEqEdit();
     m_loadingSliders = true;
     EqState flat;
     if (m_eqUiModeAdvanced && m_parametricPanel) {
@@ -1198,50 +1717,14 @@ void MainWindow::onResetClicked()
             m_eqSessionManager->saveDraftForProcess(pid,
                                                     readEqState(),
                                                     readVirtualSurroundState(),
-                                                    readDynamicRangeState());
+                                                    readDynamicRangeState(),
+                                                    readAudioChainOrder());
         }
     }
 
     appendLog(QStringLiteral("INFO"), QStringLiteral("EQ bands reset to 0 dB"));
     AudioLog::info(QStringLiteral("MainWindow"), QStringLiteral("Reset sliders to 0 dB"));
-}
-
-void MainWindow::onEnableEq()
-{
-    if (!m_eqSessionManager || !m_sessionList) {
-        return;
-    }
-
-    const unsigned long pid = m_sessionList->selectedProcessId();
-    if (pid == 0) {
-        showCopyableError(QStringLiteral("Enable EQ"), QStringLiteral("Select an app from the list first."));
-        return;
-    }
-
-    if (m_eqSessionManager->enableForProcess(pid)) {
-        m_sliderEditPid = pid;
-        refreshSessionList();
-        updateSpectrumForSelection();
-        updateEqControlState();
-    }
-}
-
-void MainWindow::onDisableEq()
-{
-    if (!m_eqSessionManager || !m_sessionList) {
-        return;
-    }
-
-    const unsigned long pid = m_sessionList->selectedProcessId();
-    if (pid == 0) {
-        return;
-    }
-
-    m_eqSessionManager->disableForProcess(pid);
-    syncSlidersToSelection();
-    refreshSessionList();
-    updateSpectrumForSelection();
-    updateEqControlState();
+    endUserEqEdit();
 }
 
 void MainWindow::onDisableAllEq()
@@ -1487,6 +1970,9 @@ void MainWindow::applySettings(const AppSettings &settings)
     applyDynamicRangeToUi(dynamicRangeSettings);
     applyDynamicRangeToEngine();
 
+    applyAudioChainToUi(settings.audioChainOrder);
+    applyAudioChainToEngine();
+
     if (m_spectrumWidget) {
         m_spectrumWidget->setSpectrumEnabled(settings.spectrumEnabled);
     }
@@ -1503,28 +1989,25 @@ void MainWindow::applySettings(const AppSettings &settings)
 
 void MainWindow::updateEqControlState()
 {
-    const unsigned long selectedPid = m_sessionList ? m_sessionList->selectedProcessId() : 0UL;
     const bool anyRunning = m_eqSessionManager && m_eqSessionManager->isAnyRunning();
-    const bool selectedRunning = m_eqSessionManager && selectedPid != 0
-                                 && m_eqSessionManager->isRunning(selectedPid);
-    const bool canEnable = m_eqSessionManager && selectedPid != 0 && !selectedRunning;
 
-    if (ui->enableEqButton) {
-        ui->enableEqButton->setEnabled(canEnable);
-    }
-    if (ui->disableEqButton) {
-        ui->disableEqButton->setEnabled(selectedRunning);
-    }
-    if (m_disableAllButton) {
-        m_disableAllButton->setEnabled(anyRunning);
+    if (ui->disableAllButton) {
+        ui->disableAllButton->setEnabled(anyRunning);
     }
     if (m_tray) {
         m_tray->updateEqSessions(m_eqSessionManager ? m_eqSessionManager->configuredTraySessions()
                                                     : QVector<ConfiguredEqSession>{});
     }
-    if (m_sessionList) {
-        m_sessionList->setAutoRefreshEnabled(anyRunning);
+    updateSessionListAutoRefresh();
+}
+
+void MainWindow::updateSessionListAutoRefresh()
+{
+    if (!m_sessionList) {
+        return;
     }
+    const bool windowInUse = isVisible() && !isMinimized();
+    m_sessionList->setAutoRefreshEnabled(windowInUse);
 }
 
 void MainWindow::applyGainsToSliders(const std::array<float, EqProcessor::kBandCount> &gains)
@@ -1563,6 +2046,12 @@ void MainWindow::onMasterSliderChanged(int value)
         return;
     }
 
+    if (m_masterSlider && m_masterSlider->isSliderDown()) {
+        beginUserEqEdit();
+    } else {
+        beginUserEqEdit();
+    }
+
     m_loadingSliders = true;
     for (QSlider *slider : m_bandSliders) {
         if (!slider) {
@@ -1579,6 +2068,10 @@ void MainWindow::onMasterSliderChanged(int value)
         if (pid != 0) {
             m_eqSessionManager->scheduleLiveGainsForProcess(pid);
         }
+    }
+
+    if (!m_masterSlider || !m_masterSlider->isSliderDown()) {
+        endUserEqEdit();
     }
 }
 
@@ -1599,9 +2092,15 @@ void MainWindow::syncSlidersToSelection()
         pid,
         [this](const EqState &eq) { applyEqStateToUi(eq); },
         [this](const VirtualSurroundSettings &settings) { applySurroundToUi(settings); },
-        [this](const DynamicRangeSettings &settings) { applyDynamicRangeToUi(settings); });
+        [this](const DynamicRangeSettings &settings) { applyDynamicRangeToUi(settings); },
+        [this](const AudioChainOrder &order) { applyAudioChainToUi(order); });
     m_loadingSliders = false;
     resetMasterSlider();
+
+    m_eqHistory.clear();
+    m_eqHistoryCoalescing = false;
+    m_lastEqSnapshot = readEqState();
+    updateEqHistoryActions();
 
     updateSpectrumForSelection();
 }

@@ -54,13 +54,13 @@ Install a virtual playback device (VB-Cable, Voicemeeter, Steam Streaming Speake
    - **EQ output device** — where you hear the EQ'd audio
    - **Mute routing sink while EQ is active** — recommended; keeps dry app audio from leaking to your headphones
 4. The routing sink and EQ output device must be different.
-5. Select a running app and click **Enable EQ**.
+5. Double-click a running app to toggle EQ (or right-click it).
 6. For Discord and other multi-process apps, enable EQ on the main Discord entry — CurvioEQ routes the full process tree.
 
 ### General
 
 1. Click an app in the list to edit its EQ — sliders and 7.1 settings switch to that app's saved values.
-2. Use **Disable for app** to stop EQ on the selected app, or **Disable all** to stop every session.
+2. Right-click an app and choose **Disable EQ**, or use **Disable all** (next to **Refresh**) to stop every session.
 3. Optional: open **Settings → Keybinds** for global shortcuts.
 4. Right-click the tray icon for quick per-app Enable/Disable EQ.
 

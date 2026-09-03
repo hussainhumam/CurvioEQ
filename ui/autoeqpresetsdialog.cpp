@@ -30,6 +30,47 @@ QStringList squigChannelSuffixes()
 {
     return {QStringLiteral(" L"), QStringLiteral(" R"), QStringLiteral(" L1"), QStringLiteral("")};
 }
+
+bool autoEqMatches(const AutoEqProfile &profile, const QString &needle)
+{
+    if (needle.isEmpty()) {
+        return true;
+    }
+    return profile.name.contains(needle, Qt::CaseInsensitive)
+        || profile.source.contains(needle, Qt::CaseInsensitive);
+}
+
+bool squigMatches(const OnlinePresetProfile &profile, const QString &needle)
+{
+    if (needle.isEmpty()) {
+        return true;
+    }
+    return profile.name.contains(needle, Qt::CaseInsensitive)
+        || profile.source.contains(needle, Qt::CaseInsensitive)
+        || profile.dbType.contains(needle, Qt::CaseInsensitive)
+        || profile.fileBase.contains(needle, Qt::CaseInsensitive);
+}
+
+bool opraMatches(const OpraProfile &profile, const QString &needle)
+{
+    if (needle.isEmpty()) {
+        return true;
+    }
+    return profile.name.contains(needle, Qt::CaseInsensitive)
+        || profile.author.contains(needle, Qt::CaseInsensitive)
+        || profile.details.contains(needle, Qt::CaseInsensitive)
+        || profile.id.contains(needle, Qt::CaseInsensitive);
+}
+
+OnlinePresetProfile autoEqToOnline(const AutoEqProfile &autoEq)
+{
+    OnlinePresetProfile profile;
+    profile.kind = OnlinePresetKind::AutoEq;
+    profile.name = autoEq.name;
+    profile.source = autoEq.source;
+    profile.relativePath = autoEq.relativePath;
+    return profile;
+}
 } // namespace
 
 OnlinePresetsDialog::OnlinePresetsDialog(PresetStore *store, QWidget *parent)
@@ -73,16 +114,21 @@ OnlinePresetsDialog::OnlinePresetsDialog(PresetStore *store, QWidget *parent)
             "All imports are saved as Advanced presets."),
         this);
     m_creditLabel->setWordWrap(true);
-    m_creditLabel->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    m_creditLabel->setStyleSheet(QStringLiteral("color: #ffffff;"));
     layout->addWidget(m_creditLabel);
 
     auto *buttonRow = new QHBoxLayout();
-    m_refreshButton = new QPushButton(QStringLiteral("Refresh lists"), this);
+    m_refreshButton = new QPushButton(QStringLiteral("Refresh"), this);
+    m_refreshButton->setToolTip(QStringLiteral("Reload the lists from the local cache."));
+    m_redownloadButton = new QPushButton(QStringLiteral("Redownload presets"), this);
+    m_redownloadButton->setToolTip(
+        QStringLiteral("Download the latest AutoEQ, OPRA, and Squiglink catalogs."));
     m_importButton = new QPushButton(QStringLiteral("Import"), this);
     m_importButton->setEnabled(false);
     m_importButton->setDefault(true);
     m_closeButton = new QPushButton(QStringLiteral("Close"), this);
     buttonRow->addWidget(m_refreshButton);
+    buttonRow->addWidget(m_redownloadButton);
     buttonRow->addStretch(1);
     buttonRow->addWidget(m_importButton);
     buttonRow->addWidget(m_closeButton);
@@ -102,10 +148,14 @@ OnlinePresetsDialog::OnlinePresetsDialog(PresetStore *store, QWidget *parent)
     connect(m_listWidget->verticalScrollBar(), &QScrollBar::valueChanged, this,
             &OnlinePresetsDialog::onListScrollChanged);
     connect(m_refreshButton, &QPushButton::clicked, this, &OnlinePresetsDialog::onRefreshClicked);
+    connect(m_redownloadButton, &QPushButton::clicked, this, &OnlinePresetsDialog::onRedownloadClicked);
     connect(m_importButton, &QPushButton::clicked, this, &OnlinePresetsDialog::onImportClicked);
     connect(m_closeButton, &QPushButton::clicked, this, &QDialog::reject);
 
     loadCaches();
+    if (m_autoEqProfiles.isEmpty() && m_opraProfiles.isEmpty() && m_squigProfiles.isEmpty()) {
+        startRefresh();
+    }
 }
 
 OnlinePresetsDialog::SourceFilter OnlinePresetsDialog::currentFilter() const
@@ -113,29 +163,46 @@ OnlinePresetsDialog::SourceFilter OnlinePresetsDialog::currentFilter() const
     return static_cast<SourceFilter>(m_sourceCombo->currentData().toInt());
 }
 
-QVector<OnlinePresetProfile> OnlinePresetsDialog::mergedProfiles() const
+int OnlinePresetsDialog::matchingCount() const
 {
-    QVector<OnlinePresetProfile> merged;
     const SourceFilter filter = currentFilter();
-    const QString query = m_searchEdit->text();
+    const QString needle = m_searchEdit->text().trimmed();
+    int count = 0;
 
     if (filter == SourceFilter::All || filter == SourceFilter::AutoEq) {
-        for (const AutoEqProfile &autoEq : AutoEqCatalog::filter(m_autoEqProfiles, query)) {
-            OnlinePresetProfile profile;
-            profile.kind = OnlinePresetKind::AutoEq;
-            profile.name = autoEq.name;
-            profile.source = autoEq.source;
-            profile.relativePath = autoEq.relativePath;
-            merged.push_back(profile);
+        if (needle.isEmpty()) {
+            count += m_autoEqProfiles.size();
+        } else {
+            for (const AutoEqProfile &profile : m_autoEqProfiles) {
+                if (autoEqMatches(profile, needle)) {
+                    ++count;
+                }
+            }
         }
     }
     if (filter == SourceFilter::All || filter == SourceFilter::Squiglink) {
-        merged += SquiglinkCatalog::filter(m_squigProfiles, query);
+        if (needle.isEmpty()) {
+            count += m_squigProfiles.size();
+        } else {
+            for (const OnlinePresetProfile &profile : m_squigProfiles) {
+                if (squigMatches(profile, needle)) {
+                    ++count;
+                }
+            }
+        }
     }
     if (filter == SourceFilter::All || filter == SourceFilter::Opra) {
-        merged += OpraCatalog::toOnlineProfiles(OpraCatalog::filter(m_opraProfiles, query));
+        if (needle.isEmpty()) {
+            count += m_opraProfiles.size();
+        } else {
+            for (const OpraProfile &profile : m_opraProfiles) {
+                if (opraMatches(profile, needle)) {
+                    ++count;
+                }
+            }
+        }
     }
-    return merged;
+    return count;
 }
 
 void OnlinePresetsDialog::onSearchTextChanged(const QString &)
@@ -156,7 +223,7 @@ void OnlinePresetsDialog::onSourceFilterChanged(int)
 
 void OnlinePresetsDialog::onListScrollChanged(int value)
 {
-    if (m_loadingPage || m_visibleCount >= m_filteredProfiles.size()) {
+    if (m_loadingPage || !m_hasMore) {
         return;
     }
     QScrollBar *bar = m_listWidget->verticalScrollBar();
@@ -170,6 +237,11 @@ void OnlinePresetsDialog::onListScrollChanged(int value)
 }
 
 void OnlinePresetsDialog::onRefreshClicked()
+{
+    loadCaches();
+}
+
+void OnlinePresetsDialog::onRedownloadClicked()
 {
     startRefresh();
 }
@@ -293,9 +365,6 @@ void OnlinePresetsDialog::onNetworkFinished()
 void OnlinePresetsDialog::handleAutoEqIndex(const QByteArray &body, bool ok, const QString &error)
 {
     if (!ok) {
-        if (m_autoEqProfiles.isEmpty()) {
-            AutoEqCatalog::loadCache(&m_autoEqProfiles);
-        }
         setStatus(QStringLiteral("AutoEQ index refresh failed: %1").arg(error), true);
     } else {
         QString parseError;
@@ -321,18 +390,12 @@ void OnlinePresetsDialog::startOpraDownload()
 void OnlinePresetsDialog::handleOpraDatabase(const QByteArray &body, bool ok, const QString &error)
 {
     if (!ok) {
-        if (m_opraProfiles.isEmpty()) {
-            OpraCatalog::loadCache(&m_opraProfiles);
-        }
         setStatus(QStringLiteral("OPRA download failed: %1").arg(error), true);
     } else {
         QString parseError;
         QVector<OpraProfile> parsed;
         if (!OpraCatalog::parseDatabaseJsonl(body, &parsed, &parseError)) {
             setStatus(parseError, true);
-            if (m_opraProfiles.isEmpty()) {
-                OpraCatalog::loadCache(&m_opraProfiles);
-            }
         } else {
             m_opraProfiles = std::move(parsed);
             OpraCatalog::saveCache(m_opraProfiles);
@@ -596,6 +659,7 @@ void OnlinePresetsDialog::setBusy(bool busy, const QString &statusText)
     m_sourceCombo->setEnabled(!busy);
     m_listWidget->setEnabled(!busy);
     m_refreshButton->setEnabled(!busy);
+    m_redownloadButton->setEnabled(!busy);
     m_importButton->setEnabled(!busy && m_listWidget->currentItem() != nullptr);
     if (!statusText.isEmpty()) {
         setStatus(statusText, false);
@@ -605,12 +669,12 @@ void OnlinePresetsDialog::setBusy(bool busy, const QString &statusText)
 void OnlinePresetsDialog::setStatus(const QString &text, bool isError)
 {
     m_statusLabel->setText(text);
-    m_statusLabel->setStyleSheet(isError ? QStringLiteral("color: #b00020;") : QString());
+    m_statusLabel->setStyleSheet(isError ? QStringLiteral("color: #b00020;") : QStringLiteral("color: #ffffff;"));
 }
 
 void OnlinePresetsDialog::rebuildFilteredProfiles()
 {
-    m_filteredProfiles = mergedProfiles();
+    m_matchTotal = matchingCount();
     resetVisiblePage();
 }
 
@@ -619,6 +683,10 @@ void OnlinePresetsDialog::resetVisiblePage()
     m_loadingPage = true;
     m_listWidget->clear();
     m_visibleCount = 0;
+    m_scanAutoEq = 0;
+    m_scanSquig = 0;
+    m_scanOpra = 0;
+    m_hasMore = true;
     m_loadingPage = false;
     appendNextPage();
     onSelectionChanged();
@@ -626,17 +694,66 @@ void OnlinePresetsDialog::resetVisiblePage()
 
 void OnlinePresetsDialog::appendNextPage()
 {
-    if (m_visibleCount >= m_filteredProfiles.size()) {
+    if (!m_hasMore) {
         updateListStatus();
         return;
     }
 
     m_loadingPage = true;
-    const int end = qMin(m_visibleCount + kPageSize, m_filteredProfiles.size());
-    for (int i = m_visibleCount; i < end; ++i) {
-        addProfileItem(m_filteredProfiles.at(i));
+    const SourceFilter filter = currentFilter();
+    const QString needle = m_searchEdit->text().trimmed();
+    const bool includeAutoEq = filter == SourceFilter::All || filter == SourceFilter::AutoEq;
+    const bool includeSquig = filter == SourceFilter::All || filter == SourceFilter::Squiglink;
+    const bool includeOpra = filter == SourceFilter::All || filter == SourceFilter::Opra;
+    int added = 0;
+
+    if (includeAutoEq) {
+        while (m_scanAutoEq < m_autoEqProfiles.size() && added < kPageSize) {
+            const AutoEqProfile &profile = m_autoEqProfiles.at(m_scanAutoEq);
+            ++m_scanAutoEq;
+            if (!autoEqMatches(profile, needle)) {
+                continue;
+            }
+            addProfileItem(autoEqToOnline(profile));
+            ++added;
+        }
+    } else {
+        m_scanAutoEq = m_autoEqProfiles.size();
     }
-    m_visibleCount = end;
+
+    if (includeSquig) {
+        while (m_scanSquig < m_squigProfiles.size() && added < kPageSize) {
+            const OnlinePresetProfile &profile = m_squigProfiles.at(m_scanSquig);
+            ++m_scanSquig;
+            if (!squigMatches(profile, needle)) {
+                continue;
+            }
+            addProfileItem(profile);
+            ++added;
+        }
+    } else {
+        m_scanSquig = m_squigProfiles.size();
+    }
+
+    if (includeOpra) {
+        while (m_scanOpra < m_opraProfiles.size() && added < kPageSize) {
+            const OpraProfile &profile = m_opraProfiles.at(m_scanOpra);
+            ++m_scanOpra;
+            if (!opraMatches(profile, needle)) {
+                continue;
+            }
+            addProfileItem(OpraCatalog::toOnlineProfile(profile));
+            ++added;
+        }
+    } else {
+        m_scanOpra = m_opraProfiles.size();
+    }
+
+    m_visibleCount += added;
+    m_hasMore = added == kPageSize
+        && ((includeAutoEq && m_scanAutoEq < m_autoEqProfiles.size())
+            || (includeSquig && m_scanSquig < m_squigProfiles.size())
+            || (includeOpra && m_scanOpra < m_opraProfiles.size()));
     m_loadingPage = false;
     updateListStatus();
 }
@@ -679,7 +796,7 @@ void OnlinePresetsDialog::updateListStatus()
     if (m_busy) {
         return;
     }
-    if (m_filteredProfiles.isEmpty()) {
+    if (m_matchTotal <= 0) {
         setStatus(QStringLiteral("No matching profiles (AutoEQ %1 · OPRA %2 · Squiglink %3)")
                       .arg(m_autoEqProfiles.size())
                       .arg(m_opraProfiles.size())
@@ -688,7 +805,7 @@ void OnlinePresetsDialog::updateListStatus()
     }
     setStatus(QStringLiteral("Showing %1 of %2 profiles (AutoEQ %3 · OPRA %4 · Squiglink %5)")
                   .arg(m_visibleCount)
-                  .arg(m_filteredProfiles.size())
+                  .arg(m_matchTotal)
                   .arg(m_autoEqProfiles.size())
                   .arg(m_opraProfiles.size())
                   .arg(m_squigProfiles.size()));
@@ -700,16 +817,22 @@ void OnlinePresetsDialog::loadCaches()
     OpraCatalog::loadCache(&m_opraProfiles);
     SquiglinkCatalog::loadCache(&m_squigProfiles);
     rebuildFilteredProfiles();
-    if (m_autoEqProfiles.isEmpty() && m_opraProfiles.isEmpty() && m_squigProfiles.isEmpty()) {
-        startRefresh();
-    } else {
-        setStatus(QStringLiteral("Loaded cached lists. Refresh to update from AutoEQ / OPRA / Squiglink."));
-    }
 }
 
 void OnlinePresetsDialog::startRefresh()
 {
     abortActive();
+    m_autoEqProfiles.clear();
+    m_opraProfiles.clear();
+    m_squigProfiles.clear();
+    m_squigQueue.clear();
+    m_squigQueueIndex = 0;
+    m_squigOkCount = 0;
+    m_squigFailCount = 0;
+    AutoEqCatalog::clearCache();
+    OpraCatalog::clearCache();
+    SquiglinkCatalog::clearCache();
+    rebuildFilteredProfiles();
     setBusy(true, QStringLiteral("Downloading AutoEQ profile index…"));
     getUrl(QUrl(AutoEqCatalog::indexMarkdownUrl()), JobKind::AutoEqIndex);
 }

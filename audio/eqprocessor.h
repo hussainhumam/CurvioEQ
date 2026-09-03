@@ -24,7 +24,6 @@ public:
     void setBandGain(int band, float gainDb);
     void setGains(const std::array<float, kBandCount> &gainsDb);
     void setEqState(const EqState &state);
-    void setAdvancedMode(bool advanced);
     void setParametricFilters(const EqFilter *filters, int count);
 
 private:

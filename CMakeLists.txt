@@ -31,10 +31,7 @@ qt_add_executable(CurvioEQ
     audio/eqprocessor.cpp
     audio/eqprocessor.h
     audio/eqstate.h
-    audio/surroundprocessor.cpp
     audio/surroundprocessor.h
-    audio/fft/realfft.cpp
-    audio/fft/realfft.h
     audio/hrtfconvolver.cpp
     audio/hrtfconvolver.h
     audio/hrtfpresets.cpp
@@ -47,6 +44,7 @@ qt_add_executable(CurvioEQ
     audio/dynamicsprocessor.cpp
     audio/dynamicsprocessor.h
     audio/dynamicrangesettings.h
+    audio/audiochainorder.h
     audio/loudnessprocessor.cpp
     audio/loudnessprocessor.h
     audio/eqaudiosession.cpp
@@ -78,21 +76,28 @@ qt_add_executable(CurvioEQ
     audio/log.h
     ui/appiconprovider.cpp
     ui/appiconprovider.h
-    ui/appsessiondelegate.cpp
-    ui/appsessiondelegate.h
     ui/presetstore.cpp
     ui/presetstore.h
+    ui/savepresetdialog.cpp
+    ui/savepresetdialog.h
     ui/settingsstore.cpp
     ui/settingsstore.h
     ui/settingsdialog.cpp
     ui/settingsdialog.h
+    ui/audiochaindialog.cpp
+    ui/audiochaindialog.h
     ui/setupdialog.cpp
     ui/setupdialog.h
     ui/keybindsdialog.cpp
     ui/keybindsdialog.h
+    ui/hotkeysequence.cpp
+    ui/hotkeysequence.h
+    ui/hotkeyedit.cpp
+    ui/hotkeyedit.h
     ui/globalhotkeymanager.cpp
     ui/globalhotkeymanager.h
     ui/appconstants.h
+    ui/slidervaluetip.h
     ui/apppaths.cpp
     ui/apppaths.h
     ui/audiodeviceresolver.cpp
@@ -111,8 +116,11 @@ qt_add_executable(CurvioEQ
     ui/squiglinkcatalog.h
     ui/eqcurvewidget.cpp
     ui/eqcurvewidget.h
+    ui/eqhistory.h
     ui/parametriceqpanel.cpp
     ui/parametriceqpanel.h
+    ui/appsessiondelegate.cpp
+    ui/appsessiondelegate.h
     ui/sessionlistcontroller.cpp
     ui/sessionlistcontroller.h
     ui/eqsessionmanager.cpp
@@ -121,6 +129,8 @@ qt_add_executable(CurvioEQ
     ui/eqcolorpalette.h
     ui/traycontroller.cpp
     ui/traycontroller.h
+    ui/updatechecker.cpp
+    ui/updatechecker.h
     ui/spectrumanalyzer.cpp
     ui/spectrumanalyzer.h
     ui/spectrumwidget.cpp
@@ -192,7 +202,6 @@ enable_testing()
 
 add_executable(CurvioEQ_GenerateHrtf tools/generate_hrtf_assets.cpp
     audio/hrtfpresets.cpp
-    audio/surroundprocessor.cpp
 )
 target_include_directories(CurvioEQ_GenerateHrtf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(CurvioEQ_GenerateHrtf PRIVATE NOMINMAX)
@@ -204,7 +213,6 @@ add_executable(CurvioEQ_DspVerify tools/dsp_verify.cpp
     audio/resampler.cpp
     audio/hrtfconvolver.cpp
     audio/hrtfpresets.cpp
-    audio/surroundprocessor.cpp
     audio/hrtfloader.cpp
     audio/virtualsurroundprocessor.cpp
     audio/dynamicsprocessor.cpp

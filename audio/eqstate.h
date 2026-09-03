@@ -36,18 +36,6 @@ struct EqState {
         filters = {};
         filterCount = 0;
     }
-
-    void setFilters(const EqFilter *source, int count)
-    {
-        clearFilters();
-        if (!source || count <= 0) {
-            return;
-        }
-        filterCount = std::min(count, kMaxParametricFilters);
-        for (int i = 0; i < filterCount; ++i) {
-            filters[static_cast<size_t>(i)] = source[i];
-        }
-    }
 };
 
 namespace EqResponse {

@@ -6,6 +6,8 @@
 #include <QObject>
 #include <QWidget>
 
+class QTimer;
+
 class GlobalHotkeyManager : public QObject, public QAbstractNativeEventFilter
 {
     Q_OBJECT
@@ -34,8 +36,13 @@ protected:
 
 private:
     bool registerSequence(int hotkeyId, const QString &sequenceText, WId windowId, const QString &label);
+    void registerAll();
     void unregisterAll();
+    void reregisterIfLayoutChanged();
 
+    AppSettings m_settings;
     WId m_windowId = 0;
+    quintptr m_registeredLayout = 0;
     bool m_filterInstalled = false;
+    QTimer *m_layoutTimer = nullptr;
 };

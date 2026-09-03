@@ -25,8 +25,6 @@ public:
     void setSampleRate(float sampleRate);
 
     int latencyFrames() const;
-    int presetId() const { return m_presetId.load(); }
-    int strength() const { return m_strength.load(); }
 
     void process(const float *stereoIn, float *stereoOut, int frameCount);
 
@@ -46,12 +44,10 @@ private:
 
     static float levelToMultiplier(int level);
     static float strengthToMix(int strength);
-    void configureLfeLowPass();
     void configureCrossoverFilters();
     void ensureConfigured();
     void upmixFrame(float left, float right, std::array<float, kSpeakerCount> *speakers);
     void normalizeAndLimitWet(int frameCount);
-    static void configureLowPass(BiquadState *filter, float sampleRate, float cutoffHz);
     static void configureHighPass(BiquadState *filter, float sampleRate, float cutoffHz);
 
     std::atomic<bool> m_enabled{false};
@@ -64,7 +60,6 @@ private:
     int m_activePresetId = -1;
     float m_activeSampleRate = 0.f;
 
-    BiquadState m_lfeLowPass;
     BiquadState m_spatialHighPassLeft;
     BiquadState m_spatialHighPassRight;
     BiquadState m_wetHighPassLeft;
@@ -72,6 +67,5 @@ private:
     BiquadState m_wetHighPassLeft2;
     BiquadState m_wetHighPassRight2;
     std::array<HrtfConvolver, kSpeakerCount> m_convolvers{};
-    std::vector<float> m_speakerScratch;
     std::vector<float> m_wetScratch;
 };

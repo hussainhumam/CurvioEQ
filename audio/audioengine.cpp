@@ -91,9 +91,7 @@ QVector<unsigned long> AudioEngine::activeProcessIds() const
     return ids;
 }
 
-bool AudioEngine::ensureRendererOpen(const QString &eqOutputDeviceId,
-                                     const QString &eqOutputDeviceName,
-                                     QString *errorMessage)
+bool AudioEngine::ensureRendererOpen(const QString &eqOutputDeviceId, QString *errorMessage)
 {
     if (m_renderer->isOpen() && m_eqOutputDeviceId == eqOutputDeviceId) {
         return true;
@@ -112,7 +110,6 @@ bool AudioEngine::ensureRendererOpen(const QString &eqOutputDeviceId,
     }
 
     m_eqOutputDeviceId = eqOutputDeviceId;
-    m_eqOutputDeviceName = eqOutputDeviceName;
 
     if (!m_mixerRunning.load()) {
         m_mixerStopRequested.store(false);
@@ -138,15 +135,14 @@ void AudioEngine::closeRenderer()
         m_renderer->close();
     }
     m_eqOutputDeviceId.clear();
-    m_eqOutputDeviceName.clear();
 }
 
 bool AudioEngine::startSession(unsigned long processId,
                                const EqState &eqState,
                                const VirtualSurroundSettings &virtualSurround,
                                const DynamicRangeSettings &dynamicRange,
+                               const AudioChainOrder &audioChainOrder,
                                const QString &eqOutputDeviceId,
-                               const QString &eqOutputDeviceName,
                                const QString &sinkDeviceId,
                                bool muteRoutingSink,
                                QString *errorMessage)
@@ -193,7 +189,7 @@ bool AudioEngine::startSession(unsigned long processId,
         }
     }
 
-    if (!ensureRendererOpen(eqOutputDeviceId, eqOutputDeviceName, errorMessage)) {
+    if (!ensureRendererOpen(eqOutputDeviceId, errorMessage)) {
         return false;
     }
 
@@ -204,6 +200,7 @@ bool AudioEngine::startSession(unsigned long processId,
     startConfig.eqState = eqState;
     startConfig.virtualSurround = virtualSurround;
     startConfig.dynamicRange = dynamicRange;
+    startConfig.audioChainOrder = audioChainOrder;
     startConfig.mixSampleRate = m_renderer->sampleRate();
     startConfig.mixChannelCount = m_renderer->channelCount();
     startConfig.sinkDeviceId = sinkDeviceId;
@@ -443,6 +440,17 @@ void AudioEngine::setSessionDynamicRange(unsigned long processId, const DynamicR
     for (auto &session : m_sessions) {
         if (session && session->processId() == processId) {
             session->setDynamicRangeSettings(settings);
+            return;
+        }
+    }
+}
+
+void AudioEngine::setSessionAudioChainOrder(unsigned long processId, const AudioChainOrder &order)
+{
+    std::lock_guard<std::mutex> lock(m_sessionsMutex);
+    for (auto &session : m_sessions) {
+        if (session && session->processId() == processId) {
+            session->setAudioChainOrder(order);
             return;
         }
     }

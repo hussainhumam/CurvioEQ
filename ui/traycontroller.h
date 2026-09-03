@@ -24,12 +24,14 @@ public:
     bool isAvailable() const;
 
     void showCriticalMessage(const QString &title, const QString &message);
+    void showUpdateAvailableMessage(const QString &version);
 
 signals:
     void showWindowRequested();
     void toggleEqForProcessRequested(unsigned long processId);
     void quitRequested();
     void logMessage(const QString &level, const QString &message);
+    void updateRequested();
 
 private:
     void onTrayActivated(QSystemTrayIcon::ActivationReason reason);

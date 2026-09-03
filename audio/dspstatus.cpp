@@ -1,6 +1,7 @@
 #include "dspstatus.h"
 
 #include "audiopipeline.h"
+#include "audiochainorder.h"
 #include "eqprocessor.h"
 #include "resampler.h"
 #include "hrtfpresets.h"
@@ -784,6 +785,107 @@ int runLoudnessHotLimitTest()
     return 0;
 }
 
+void applyAudioChainForTest(const AudioChainOrder &order,
+                            EqProcessor *eq,
+                            LoudnessProcessor *loudness,
+                            float *buffer,
+                            int frameCount,
+                            int channelCount)
+{
+    for (AudioChainStage stage : order.stages) {
+        switch (stage) {
+        case AudioChainStage::Eq:
+            eq->process(buffer, frameCount, channelCount);
+            break;
+        case AudioChainStage::Loudness:
+            if (loudness->isEnabled()) {
+                loudness->process(buffer, frameCount, channelCount);
+            }
+            break;
+        case AudioChainStage::VirtualSurround:
+        case AudioChainStage::Dynamics:
+            break;
+        }
+    }
+}
+
+int runAudioChainOrderTest()
+{
+    if (!audioChainOrdersEqual(unpackAudioChainOrder(packAudioChainOrder(defaultAudioChainOrder())),
+                               defaultAudioChainOrder())) {
+        dspPrint(true, "  [FAIL] audio chain pack/unpack\n");
+        return 1;
+    }
+
+    AudioChainOrder duplicate = defaultAudioChainOrder();
+    duplicate.stages[1] = AudioChainStage::Eq;
+    if (!audioChainOrdersEqual(normalizeAudioChainOrder(duplicate), defaultAudioChainOrder())) {
+        dspPrint(true, "  [FAIL] audio chain normalize\n");
+        return 1;
+    }
+
+    EqProcessor eq;
+    eq.setSampleRate(48000.f);
+    std::array<float, EqProcessor::kBandCount> gains{};
+    gains[4] = 12.f;
+    eq.setGains(gains);
+
+    LoudnessProcessor loudness;
+    loudness.setSampleRate(48000.f);
+    loudness.setEnabled(true);
+    loudness.setAmount(DynamicRangeSettings::kLoudnessMax);
+
+    constexpr int kFrames = 48000;
+    constexpr float kQuietAmplitude = 0.03162f;
+    std::vector<float> input(kFrames * 2);
+    for (int i = 0; i < kFrames; ++i) {
+        const float sample =
+            kQuietAmplitude * std::sin(2.f * 3.14159265358979323846f * 440.f * static_cast<float>(i) / 48000.f);
+        input[static_cast<size_t>(i * 2)] = sample;
+        input[static_cast<size_t>(i * 2 + 1)] = sample;
+    }
+
+    std::vector<float> defaultOrderOut = input;
+    applyAudioChainForTest(defaultAudioChainOrder(), &eq, &loudness, defaultOrderOut.data(), kFrames, 2);
+
+    eq.reset();
+    loudness.reset();
+
+    AudioChainOrder loudnessFirst = defaultAudioChainOrder();
+    loudnessFirst.stages = {
+        AudioChainStage::Loudness,
+        AudioChainStage::Eq,
+        AudioChainStage::VirtualSurround,
+        AudioChainStage::Dynamics,
+    };
+    std::vector<float> swappedOut = input;
+    applyAudioChainForTest(normalizeAudioChainOrder(loudnessFirst), &eq, &loudness, swappedOut.data(), kFrames, 2);
+
+    bool allFinite = true;
+    bool differs = false;
+    for (size_t i = 0; i < defaultOrderOut.size(); ++i) {
+        if (!std::isfinite(defaultOrderOut[i]) || !std::isfinite(swappedOut[i])) {
+            allFinite = false;
+            break;
+        }
+        if (std::fabs(defaultOrderOut[i] - swappedOut[i]) > 1e-4f) {
+            differs = true;
+        }
+    }
+
+    if (!allFinite) {
+        dspPrint(true, "  [FAIL] audio chain order (non-finite)\n");
+        return 1;
+    }
+    if (!differs) {
+        dspPrint(true, "  [FAIL] audio chain order (EQ→Loudness matched Loudness→EQ)\n");
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   audio chain order changes output\n");
+    return 0;
+}
+
 int runVerificationChecks(bool includeRingBufferStress)
 {
     dspPrint(false, "Running DSP verification checks...\n");
@@ -806,6 +908,7 @@ int runVerificationChecks(bool includeRingBufferStress)
     failures += runLoudnessBypassTest();
     failures += runLoudnessQuietBoostTest();
     failures += runLoudnessHotLimitTest();
+    failures += runAudioChainOrderTest();
     failures += includeRingBufferStress ? runRingBufferStressTest() : runRingBufferQuickTest();
     dspPrint(false, "\n");
 
@@ -838,7 +941,7 @@ void printDspArchitectureState()
                AppConstants::kTargetRingFillFrames,
                AppConstants::kHighRingFillFrames);
     dspPrint(false, "  Mix bus          : soft-knee limiter\n");
-    dspPrint(false, "  Pipeline         : EQ -> optional HRTF -> optional dynamics -> optional loudness (stereo)\n");
+    dspPrint(false, "  Pipeline         : user-ordered EQ / HRTF / dynamics / loudness (resample last)\n");
     dspPrint(false, "  Virtual surround : 8-speaker upmix + HRIR convolution\n");
     dspPrint(false, "  Dynamic range    : stereo-linked soft-knee compressor (Wide/Tight)\n");
     dspPrint(false, "  Loudness         : K-weighted gain rider (-24 to -14 LUFS target)\n");

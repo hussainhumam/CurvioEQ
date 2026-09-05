@@ -32,7 +32,9 @@ class MainWindow;
 }
 QT_END_NAMESPACE
 
+class ClipFrequencyAnalyzer;
 class EqSessionManager;
+class Vst3AddonManager;
 class GlobalHotkeyManager;
 class ParametricEqPanel;
 class PresetPanelController;
@@ -42,6 +44,7 @@ class SpectrumWidget;
 class TrayController;
 class UpdateChecker;
 class QAction;
+class QMenu;
 
 class MainWindow : public QMainWindow
 {
@@ -146,6 +149,8 @@ private:
     SpectrumWidget *m_spectrumWidget = nullptr;
     PresetPanelController *m_presetPanel = nullptr;
     SessionListController *m_sessionList = nullptr;
+    ClipFrequencyAnalyzer *m_clipAnalyzer = nullptr;
+    Vst3AddonManager *m_addonManager = nullptr;
     EqSessionManager *m_eqSessionManager = nullptr;
     TrayController *m_tray = nullptr;
     GlobalHotkeyManager *m_hotkeyManager = nullptr;
@@ -192,6 +197,7 @@ private:
     QAction *m_redoAction = nullptr;
     QAction *m_updateAction = nullptr;
     QAction *m_changelogAction = nullptr;
+    QMenu *m_addonsMenu = nullptr;
     UpdateChecker *m_updateChecker = nullptr;
     QUrl m_pendingInstallerUrl;
     QString m_changelogSinceVersion;

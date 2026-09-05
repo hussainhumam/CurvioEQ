@@ -1,6 +1,7 @@
 #include "sessionlistcontroller.h"
 
 #include "audio/audiosessionenumerator.h"
+#include "audio/audiosessionvolume.h"
 #include "audio/audiopolicyrouter.h"
 #include "ui/appconstants.h"
 #include "ui/appiconprovider.h"
@@ -10,6 +11,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QEvent>
+#include <QHBoxLayout>
 #include <QHash>
 #include <QItemSelectionModel>
 #include <QLabel>
@@ -18,10 +20,13 @@
 #include <QMouseEvent>
 #include <QSet>
 #include <QSize>
+#include <QSlider>
 #include <QStandardItem>
 #include <QStringList>
 #include <QTimer>
 #include <QVector>
+#include <QWidget>
+#include <QWidgetAction>
 
 #include <algorithm>
 
@@ -303,6 +308,12 @@ void SessionListController::onTimer()
     emit refreshRequested();
 }
 
+void SessionListController::setClipRecording(unsigned long processId, const QString &displayName)
+{
+    m_clipRecordingPid = processId;
+    m_clipRecordingName = displayName;
+}
+
 void SessionListController::showContextMenu(const QPoint &position)
 {
     const QModelIndex index = m_listView->indexAt(position);
@@ -318,6 +329,7 @@ void SessionListController::showContextMenu(const QPoint &position)
     }
 
     QMenu menu(m_listView);
+    menu.setToolTipsVisible(true);
     const bool eqActive = m_eqSessions.contains(processId);
     if (eqActive) {
         QAction *disableEqAction = menu.addAction(QStringLiteral("Disable EQ"));
@@ -333,10 +345,93 @@ void SessionListController::showContextMenu(const QPoint &position)
 
     menu.addSeparator();
 
+    auto *volumeRow = new QWidget(&menu);
+    auto *volumeLayout = new QHBoxLayout(volumeRow);
+    volumeLayout->setContentsMargins(8, 4, 8, 4);
+    volumeLayout->setSpacing(6);
+    auto *volumeSlider = new QSlider(Qt::Horizontal, volumeRow);
+    volumeSlider->setRange(AudioSessionVolume::kMinPercent, AudioSessionVolume::kMaxPercent);
+    volumeSlider->setMinimumWidth(220);
+    volumeSlider->setMinimumHeight(22);
+    volumeSlider->setSingleStep(1);
+    volumeSlider->setPageStep(5);
+    volumeSlider->setToolTip(
+        QStringLiteral("Windows mixer volume (0–100%). 101–150% is up to ~50% louder on the EQ output."));
+    auto *percentLabel = new QLabel(QStringLiteral("100%"), volumeRow);
+    percentLabel->setMinimumWidth(32);
+    percentLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    volumeLayout->addWidget(volumeSlider, 1);
+    volumeLayout->addWidget(percentLabel);
+
+    int percent = AudioSessionVolume::kUnityPercent;
+    QString volumeError;
+    if (m_boostPercent.contains(processId)) {
+        percent = std::clamp(m_boostPercent.value(processId),
+                             AudioSessionVolume::kMinPercent,
+                             AudioSessionVolume::kMaxPercent);
+        volumeSlider->setValue(percent);
+        percentLabel->setText(QStringLiteral("%1%").arg(percent));
+    } else {
+        float currentLevel = 1.f;
+        if (AudioSessionVolume::getMasterVolume(processId, &currentLevel, &volumeError)) {
+            percent = std::clamp(static_cast<int>(currentLevel * 100.f + 0.5f),
+                                 AudioSessionVolume::kMinPercent,
+                                 AudioSessionVolume::kUnityPercent);
+            volumeSlider->setValue(percent);
+            percentLabel->setText(QStringLiteral("%1%").arg(percent));
+        } else {
+            volumeSlider->setEnabled(false);
+            percentLabel->setText(QStringLiteral("\u2014"));
+            volumeRow->setToolTip(volumeError);
+        }
+    }
+
+    connect(volumeSlider, &QSlider::valueChanged, this,
+            [this, processId, percentLabel, volumeSlider](int value) {
+                percentLabel->setText(QStringLiteral("%1%").arg(value));
+                const float windowsLevel =
+                    static_cast<float>(std::min(value, AudioSessionVolume::kUnityPercent)) / 100.f;
+                if (!AudioSessionVolume::setMasterVolume(processId, windowsLevel)) {
+                    volumeSlider->setEnabled(false);
+                    return;
+                }
+                if (value > AudioSessionVolume::kUnityPercent) {
+                    m_boostPercent.insert(processId, value);
+                } else {
+                    m_boostPercent.remove(processId);
+                }
+                emit appVolumeChanged(processId, value);
+            });
+
+    auto *volumeAction = new QWidgetAction(&menu);
+    volumeAction->setDefaultWidget(volumeRow);
+    menu.addAction(volumeAction);
+
+    menu.addSeparator();
+
     QAction *soundModsAction = menu.addAction(QStringLiteral("Manage sound files…"));
     connect(soundModsAction, &QAction::triggered, this, [this, processId]() {
         emit soundModsRequested(processId);
     });
+
+    menu.addSeparator();
+
+    if (m_clipRecordingPid == processId) {
+        QAction *stopClipAction = menu.addAction(QStringLiteral("Stop and analyze"));
+        connect(stopClipAction, &QAction::triggered, this, [this]() {
+            emit stopClipAnalyzeRequested();
+        });
+    } else {
+        QAction *recordClipAction = menu.addAction(QStringLiteral("Record clip"));
+        if (m_clipRecordingPid != 0) {
+            recordClipAction->setEnabled(false);
+            recordClipAction->setToolTip(
+                QStringLiteral("Already recording %1").arg(m_clipRecordingName));
+        }
+        connect(recordClipAction, &QAction::triggered, this, [this, processId]() {
+            emit recordClipRequested(processId);
+        });
+    }
 
     menu.addSeparator();
 

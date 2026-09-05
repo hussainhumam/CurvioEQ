@@ -3,6 +3,7 @@
 #include "audio/audiochainorder.h"
 
 #include <QDialog>
+#include <QStringList>
 
 class QListWidget;
 class QPushButton;
@@ -12,7 +13,9 @@ class AudioChainDialog : public QDialog
     Q_OBJECT
 
 public:
-    explicit AudioChainDialog(const AudioChainOrder &current, QWidget *parent = nullptr);
+    explicit AudioChainDialog(const AudioChainOrder &current,
+                              const QStringList &addonNames = {},
+                              QWidget *parent = nullptr);
 
     AudioChainOrder order() const;
 
@@ -24,6 +27,9 @@ private:
     void emitCurrentOrder();
     void moveSelection(int delta);
     void updateButtons();
+    QString labelForStage(AudioChainStage stage) const;
+
+    QStringList m_addonNames;
 
     QListWidget *m_list = nullptr;
     QPushButton *m_upButton = nullptr;

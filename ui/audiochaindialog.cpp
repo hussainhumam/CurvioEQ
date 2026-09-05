@@ -12,7 +12,7 @@
 
 namespace {
 
-QString stageLabel(AudioChainStage stage)
+QString builtinLabel(AudioChainStage stage)
 {
     switch (stage) {
     case AudioChainStage::Eq:
@@ -23,14 +23,19 @@ QString stageLabel(AudioChainStage stage)
         return QStringLiteral("Dynamics");
     case AudioChainStage::Loudness:
         return QStringLiteral("Loudness");
+    default:
+        break;
     }
-    return QStringLiteral("EQ");
+    return QStringLiteral("Plugin");
 }
 
 } // namespace
 
-AudioChainDialog::AudioChainDialog(const AudioChainOrder &current, QWidget *parent)
+AudioChainDialog::AudioChainDialog(const AudioChainOrder &current,
+                                   const QStringList &addonNames,
+                                   QWidget *parent)
     : QDialog(parent)
+    , m_addonNames(addonNames)
 {
     setWindowTitle(QStringLiteral("Audio chain"));
     setMinimumWidth(360);
@@ -71,7 +76,13 @@ AudioChainDialog::AudioChainDialog(const AudioChainOrder &current, QWidget *pare
     connect(m_upButton, &QPushButton::clicked, this, [this]() { moveSelection(-1); });
     connect(m_downButton, &QPushButton::clicked, this, [this]() { moveSelection(1); });
     connect(resetButton, &QPushButton::clicked, this, [this]() {
-        populateList(defaultAudioChainOrder());
+        AudioChainOrder reset = defaultAudioChainOrder();
+        for (int i = 0; i < m_addonNames.size() && i < kAudioChainAddonCount; ++i) {
+            if (!m_addonNames.at(i).isEmpty()) {
+                reset = appendAddonToChain(reset, i);
+            }
+        }
+        populateList(reset);
         emitCurrentOrder();
     });
     connect(m_list, &QListWidget::currentRowChanged, this, [this](int) { updateButtons(); });
@@ -88,20 +99,33 @@ AudioChainDialog::AudioChainDialog(const AudioChainOrder &current, QWidget *pare
 
 AudioChainOrder AudioChainDialog::order() const
 {
-    AudioChainOrder result = defaultAudioChainOrder();
-    if (!m_list || m_list->count() != kAudioChainStageCount) {
-        return result;
+    AudioChainOrder result;
+    result.count = 0;
+    if (!m_list) {
+        return defaultAudioChainOrder();
     }
 
-    for (int i = 0; i < kAudioChainStageCount; ++i) {
+    for (int i = 0; i < m_list->count() && result.count < kAudioChainMaxStages; ++i) {
         const QListWidgetItem *item = m_list->item(i);
         if (!item) {
             return defaultAudioChainOrder();
         }
-        result.stages[static_cast<size_t>(i)] =
+        result.stages[static_cast<size_t>(result.count++)] =
             static_cast<AudioChainStage>(item->data(Qt::UserRole).toInt());
     }
     return normalizeAudioChainOrder(result);
+}
+
+QString AudioChainDialog::labelForStage(AudioChainStage stage) const
+{
+    if (audioChainStageIsAddon(stage)) {
+        const int slot = audioChainAddonIndex(stage);
+        if (slot >= 0 && slot < m_addonNames.size() && !m_addonNames.at(slot).isEmpty()) {
+            return m_addonNames.at(slot);
+        }
+        return QStringLiteral("Plugin %1").arg(slot + 1);
+    }
+    return builtinLabel(stage);
 }
 
 void AudioChainDialog::populateList(const AudioChainOrder &order)
@@ -113,8 +137,9 @@ void AudioChainDialog::populateList(const AudioChainOrder &order)
     const AudioChainOrder normalized = normalizeAudioChainOrder(order);
     m_updating = true;
     m_list->clear();
-    for (AudioChainStage stage : normalized.stages) {
-        auto *item = new QListWidgetItem(stageLabel(stage));
+    for (int i = 0; i < normalized.count; ++i) {
+        const AudioChainStage stage = normalized.stages[static_cast<size_t>(i)];
+        auto *item = new QListWidgetItem(labelForStage(stage));
         item->setData(Qt::UserRole, static_cast<int>(stage));
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         m_list->addItem(item);

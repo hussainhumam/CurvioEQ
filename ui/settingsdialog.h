@@ -9,6 +9,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QListWidget;
 
 class SettingsDialog : public QDialog
 {
@@ -32,6 +33,7 @@ private:
     QCheckBox *m_muteRoutingSinkCheck = nullptr;
     QComboBox *m_routingSinkCombo = nullptr;
     QComboBox *m_eqOutputCombo = nullptr;
+    QListWidget *m_vst3FolderList = nullptr;
     QVector<AudioRenderDeviceInfo> m_routingSinkDevices;
     QVector<AudioRenderDeviceInfo> m_eqOutputDevices;
     AppSettings m_result;

@@ -4,7 +4,7 @@ namespace AppConstants {
 
 inline constexpr char kAppDisplayName[] = "CurvioEQ";
 inline constexpr char kAppId[] = "CurvioEQ";
-inline constexpr char kAppVersion[] = "1.3.0";
+inline constexpr char kAppVersion[] = "1.3.1";
 inline constexpr char kGitHubOwner[] = "hussainhumam";
 inline constexpr char kGitHubRepo[] = "CurvioEQ";
 
@@ -14,6 +14,9 @@ inline constexpr float kSpectrumAttackAlpha = 0.7f;
 inline constexpr float kSpectrumReleaseAlpha = 0.4f;
 inline constexpr float kSpectrumYHeadroom = 1.15f;
 inline constexpr float kSpectrumYMinPeak = 0.05f;
+inline constexpr float kSpectrumLimiterMinDb = -48.f;
+inline constexpr float kSpectrumLimiterMaxDb = 0.f;
+inline constexpr int kSpectrumLimiterGrabPx = 8;
 inline constexpr int kGainUpdateDebounceMs = 75;
 inline constexpr int kTrayMessageDurationMs = 5000;
 inline constexpr int kMaxGainDb = 20;

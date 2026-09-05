@@ -58,6 +58,8 @@ qt_add_executable(CurvioEQ
     audio/clocksync.h
     audio/mixlimiter.cpp
     audio/mixlimiter.h
+    audio/spectrumceilinglimiter.cpp
+    audio/spectrumceilinglimiter.h
     audio/audiothreadutils.h
     audio/dspstatus.cpp
     audio/dspstatus.h
@@ -73,7 +75,21 @@ qt_add_executable(CurvioEQ
     audio/audioendpointvolume.h
     audio/audiosessionvolume.cpp
     audio/audiosessionvolume.h
+    audio/clipfrequencyanalyzer.cpp
+    audio/clipfrequencyanalyzer.h
     audio/log.h
+    vst3/vst3iids.cpp
+    vst3/vst3hostsupport.cpp
+    vst3/vst3hostsupport.h
+    vst3/vst3plugin.cpp
+    vst3/vst3plugin.h
+    vst3/vst3addonstore.cpp
+    vst3/vst3addonstore.h
+    vst3/vst3addonmanager.cpp
+    vst3/vst3addonmanager.h
+    third_party/pluginterfaces/base/funknown.cpp
+    third_party/pluginterfaces/base/conststringtable.cpp
+    third_party/pluginterfaces/base/ustring.cpp
     ui/appiconprovider.cpp
     ui/appiconprovider.h
     ui/presetstore.cpp
@@ -86,6 +102,8 @@ qt_add_executable(CurvioEQ
     ui/settingsdialog.h
     ui/audiochaindialog.cpp
     ui/audiochaindialog.h
+    ui/addonspanel.cpp
+    ui/addonspanel.h
     ui/setupdialog.cpp
     ui/setupdialog.h
     ui/keybindsdialog.cpp
@@ -170,7 +188,10 @@ target_compile_definitions(CurvioEQ PRIVATE
     NOMINMAX
 )
 
-target_include_directories(CurvioEQ PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(CurvioEQ PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
 
 target_link_libraries(CurvioEQ
     PRIVATE
@@ -217,6 +238,8 @@ add_executable(CurvioEQ_DspVerify tools/dsp_verify.cpp
     audio/virtualsurroundprocessor.cpp
     audio/dynamicsprocessor.cpp
     audio/loudnessprocessor.cpp
+    audio/mixlimiter.cpp
+    audio/spectrumceilinglimiter.cpp
 )
 target_include_directories(CurvioEQ_DspVerify PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(CurvioEQ_DspVerify PRIVATE NOMINMAX)

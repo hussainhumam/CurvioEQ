@@ -70,28 +70,41 @@ bool SettingsStore::load()
     m_settings.dynamicsEnabled = root.value(QStringLiteral("dynamicsEnabled")).toBool(false);
     m_settings.dynamicsAmount =
         clampDynamicRangeAmount(root.value(QStringLiteral("dynamicsAmount")).toInt(DynamicRangeSettings::kAmountDefault));
-    m_settings.dynamicsLoudnessAmount = clampLoudnessAmount(
-        root.value(QStringLiteral("dynamicsLoudnessAmount")).toInt(DynamicRangeSettings::kLoudnessDefault));
+    {
+        int loudnessAmount =
+            root.value(QStringLiteral("dynamicsLoudnessAmount")).toInt(DynamicRangeSettings::kLoudnessDefault);
+        if (version < 9) {
+            loudnessAmount = migrateLegacyLoudnessAmount(loudnessAmount);
+        } else if (version < 10) {
+            loudnessAmount = migrateV2LoudnessAmount(loudnessAmount);
+        }
+        m_settings.dynamicsLoudnessAmount = clampLoudnessAmount(loudnessAmount);
+    }
     {
         AudioChainOrder loaded = defaultAudioChainOrder();
         const QJsonArray chain = root.value(QStringLiteral("audioChainOrder")).toArray();
-        if (chain.size() == kAudioChainStageCount) {
+        if (!chain.isEmpty() && chain.size() <= kAudioChainMaxStages) {
             bool ok = true;
-            for (int i = 0; i < kAudioChainStageCount; ++i) {
+            loaded.count = 0;
+            for (int i = 0; i < chain.size(); ++i) {
                 AudioChainStage stage = AudioChainStage::Eq;
                 const QByteArray id = chain.at(i).toString().toUtf8();
-                if (!audioChainStageFromId(id.constData(), &stage)) {
+                if (!audioChainStageFromId(id.constData(), &stage) || audioChainStageIsAddon(stage)) {
                     ok = false;
                     break;
                 }
-                loaded.stages[static_cast<size_t>(i)] = stage;
+                loaded.stages[static_cast<size_t>(loaded.count++)] = stage;
             }
             if (ok) {
-                m_settings.audioChainOrder = normalizeAudioChainOrder(loaded);
+                m_settings.audioChainOrder = builtinsOnly(normalizeAudioChainOrder(loaded));
             }
         }
     }
     m_settings.spectrumEnabled = root.value(QStringLiteral("spectrumEnabled")).toBool(true);
+    m_settings.spectrumLimiterDb = std::clamp(
+        static_cast<float>(root.value(QStringLiteral("spectrumLimiterDb")).toDouble(0.0)),
+        AppConstants::kSpectrumLimiterMinDb,
+        AppConstants::kSpectrumLimiterMaxDb);
     m_settings.eqUiModeAdvanced = root.value(QStringLiteral("eqUiModeAdvanced")).toBool(false);
     m_settings.keybindsEnabled = root.value(QStringLiteral("keybindsEnabled")).toBool(false);
     m_settings.eqToggleKeybind = root.value(QStringLiteral("eqToggleKeybind")).toString();
@@ -119,6 +132,15 @@ bool SettingsStore::load()
     }
 
     m_settings.lastShownChangelogVersion = root.value(QStringLiteral("lastShownChangelogVersion")).toString();
+    {
+        const QJsonArray folders = root.value(QStringLiteral("vst3ExtraFolders")).toArray();
+        for (const QJsonValue &value : folders) {
+            const QString folder = value.toString().trimmed();
+            if (!folder.isEmpty()) {
+                m_settings.vst3ExtraFolders.append(folder);
+            }
+        }
+    }
 
     if (!m_settings.setupCompleted && !m_settings.routingSinkDeviceId.isEmpty()
         && !m_settings.eqOutputDeviceId.isEmpty()) {
@@ -134,7 +156,7 @@ bool SettingsStore::save() const
     QDir().mkpath(QFileInfo(path).absolutePath());
 
     QJsonObject root;
-    root.insert(QStringLiteral("version"), 8);
+    root.insert(QStringLiteral("version"), 10);
     root.insert(QStringLiteral("startWithWindows"), m_settings.startWithWindows);
     root.insert(QStringLiteral("setupCompleted"), m_settings.setupCompleted);
     root.insert(QStringLiteral("muteRoutingSink"), m_settings.muteRoutingSink);
@@ -149,12 +171,13 @@ bool SettingsStore::save() const
     root.insert(QStringLiteral("dynamicsAmount"), m_settings.dynamicsAmount);
     root.insert(QStringLiteral("dynamicsLoudnessAmount"), m_settings.dynamicsLoudnessAmount);
     QJsonArray audioChainOrder;
-    const AudioChainOrder chain = normalizeAudioChainOrder(m_settings.audioChainOrder);
-    for (AudioChainStage stage : chain.stages) {
-        audioChainOrder.append(QString::fromLatin1(audioChainStageId(stage)));
+    const AudioChainOrder chain = builtinsOnly(normalizeAudioChainOrder(m_settings.audioChainOrder));
+    for (int i = 0; i < chain.count; ++i) {
+        audioChainOrder.append(QString::fromLatin1(audioChainStageId(chain.stages[static_cast<size_t>(i)])));
     }
     root.insert(QStringLiteral("audioChainOrder"), audioChainOrder);
     root.insert(QStringLiteral("spectrumEnabled"), m_settings.spectrumEnabled);
+    root.insert(QStringLiteral("spectrumLimiterDb"), static_cast<double>(m_settings.spectrumLimiterDb));
     root.insert(QStringLiteral("eqUiModeAdvanced"), m_settings.eqUiModeAdvanced);
     root.insert(QStringLiteral("keybindsEnabled"), m_settings.keybindsEnabled);
     root.insert(QStringLiteral("eqToggleKeybind"), m_settings.eqToggleKeybind);
@@ -172,6 +195,11 @@ bool SettingsStore::save() const
     }
     root.insert(QStringLiteral("surroundChannelLevels"), levels);
     root.insert(QStringLiteral("lastShownChangelogVersion"), m_settings.lastShownChangelogVersion);
+    QJsonArray vst3Folders;
+    for (const QString &folder : m_settings.vst3ExtraFolders) {
+        vst3Folders.append(folder);
+    }
+    root.insert(QStringLiteral("vst3ExtraFolders"), vst3Folders);
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

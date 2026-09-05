@@ -2,13 +2,16 @@
 
 #include "ui_mainwindow.h"
 
+#include "audio/clipfrequencyanalyzer.h"
 #include "audio/dspstatus.h"
 #include "audio/hrtfpresets.h"
-#include "audio/loudnessprocessor.h"
 #include "audio/log.h"
 #include "audio/audioendpointvolume.h"
 #include "audio/audiosessionvolume.h"
+#include "vst3/vst3addonmanager.h"
+#include "ui/addonspanel.h"
 #include "ui/appconstants.h"
+#include "ui/appiconprovider.h"
 #include "ui/apppaths.h"
 #include "ui/audiodeviceresolver.h"
 #include "ui/eqcolorpalette.h"
@@ -24,6 +27,7 @@
 #include "ui/singleinstanceserver.h"
 #include "ui/slidervaluetip.h"
 #include "ui/spectrumwidget.h"
+#include "audio/mixlimiter.h"
 #include "ui/soundmoddialog.h"
 #include "ui/traycontroller.h"
 #include "ui/updatechecker.h"
@@ -90,8 +94,7 @@ QString loudnessTargetLabelForAmount(int amount)
     if (amount <= DynamicRangeSettings::kLoudnessMin) {
         return QStringLiteral("Off");
     }
-    const float targetLufs = LoudnessProcessor::targetLoudnessDbForAmount(amount);
-    return QStringLiteral("%1 LUFS").arg(static_cast<int>(std::lround(targetLufs)));
+    return QStringLiteral("%1 LUFS").arg(static_cast<double>(loudnessAmountToTargetLufs(amount)), 0, 'f', 2);
 }
 
 bool isEqHistoryShortcutWindow(const QObject *watched, const QWidget *mainWindow)
@@ -148,6 +151,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_spectrumWidget, &SpectrumWidget::spectrumEnabledChanged, this, [this](bool) {
         saveSpectrumSettings();
         updateSpectrumForSelection();
+    });
+    connect(m_spectrumWidget, &SpectrumWidget::limiterCeilingChanged, this, [this](float db) {
+        m_audioEngine.setOutputLimiterThreshold(MixLimiter::dbToLinear(db));
+    });
+    connect(m_spectrumWidget, &SpectrumWidget::limiterCeilingEditFinished, this, [this]() {
+        saveSpectrumSettings();
     });
 
     QFont logFont = ui->logTextEdit->font();
@@ -296,6 +305,9 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         }
         if (m_eqSessionManager->enableForProcess(pid)) {
+            if (m_addonManager) {
+                m_addonManager->attachToSession(pid, AppIconProvider::executablePathForProcess(pid), 48000.f);
+            }
             m_sliderEditPid = pid;
             refreshSessionList();
             updateSpectrumForSelection();
@@ -317,6 +329,35 @@ MainWindow::MainWindow(QWidget *parent)
         auto *dialog = new SoundModDialog(pid, displayName, this);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->open();
+    });
+    connect(m_sessionList, &SessionListController::appVolumeChanged, this,
+            [this](unsigned long pid, int percent) {
+                const float boost = AudioSessionVolume::outputGainForPercent(percent);
+                m_audioEngine.setSessionOutputGain(pid, boost);
+            });
+    m_addonManager = new Vst3AddonManager(&m_audioEngine, this);
+    m_addonManager->setExtraFolders(m_settingsStore.settings().vst3ExtraFolders);
+    connect(m_addonManager, &Vst3AddonManager::logMessage, this, &MainWindow::appendLog);
+    m_clipAnalyzer = new ClipFrequencyAnalyzer(this);
+    connect(m_clipAnalyzer, &ClipFrequencyAnalyzer::logMessage, this, &MainWindow::appendLog);
+    connect(m_clipAnalyzer, &ClipFrequencyAnalyzer::recordingChanged, this,
+            [this](bool recording, unsigned long pid, const QString &name) {
+                if (!m_sessionList) {
+                    return;
+                }
+                m_sessionList->setClipRecording(recording ? pid : 0, name);
+            });
+    connect(m_sessionList, &SessionListController::recordClipRequested, this,
+            [this](unsigned long pid) {
+                if (!m_clipAnalyzer || !m_sessionList) {
+                    return;
+                }
+                m_clipAnalyzer->start(pid, m_sessionList->displayNameForPid(pid));
+            });
+    connect(m_sessionList, &SessionListController::stopClipAnalyzeRequested, this, [this]() {
+        if (m_clipAnalyzer) {
+            m_clipAnalyzer->stopAndAnalyze();
+        }
     });
     connect(ui->refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshClicked);
 
@@ -760,20 +801,21 @@ void MainWindow::setupDynamicsUi()
 
     auto *loudnessRow = new QHBoxLayout();
     auto *quietLabel = new QLabel(QStringLiteral("Quiet"), m_dynamicsGroup);
-    quietLabel->setToolTip(QStringLiteral("No loudness normalization."));
+    quietLabel->setToolTip(QStringLiteral("Quieter EBU R128 target (−23 LUFS)."));
     m_loudnessAmountSlider = new QSlider(Qt::Horizontal, m_dynamicsGroup);
     m_loudnessAmountSlider->setRange(DynamicRangeSettings::kLoudnessMin, DynamicRangeSettings::kLoudnessMax);
     m_loudnessAmountSlider->setValue(DynamicRangeSettings::kLoudnessDefault);
+    m_loudnessAmountSlider->setSingleStep(1);
+    m_loudnessAmountSlider->setPageStep(10);
     m_loudnessAmountSlider->setStatusTip(
-        QStringLiteral("Normalizes overall loudness toward a target level. "
-                       "Helps quiet games and videos without changing peak-vs-average shape."));
+        QStringLiteral("Target loudness in LUFS. 0 is off; −23 LUFS is EBU; −14 LUFS is streaming."));
     installSliderValueTip(m_loudnessAmountSlider, [](int value) {
-        return QStringLiteral("%1 \u2014 %2").arg(value).arg(loudnessTargetLabelForAmount(value));
+        return loudnessTargetLabelForAmount(value);
     });
     auto *loudLabel = new QLabel(QStringLiteral("Loud"), m_dynamicsGroup);
-    loudLabel->setToolTip(QStringLiteral("Stronger normalization toward a louder target level."));
+    loudLabel->setToolTip(QStringLiteral("Streaming / YouTube target (−14 LUFS)."));
     m_loudnessTargetLabel = new QLabel(loudnessTargetLabelForAmount(DynamicRangeSettings::kLoudnessDefault), m_dynamicsGroup);
-    m_loudnessTargetLabel->setMinimumWidth(72);
+    m_loudnessTargetLabel->setMinimumWidth(88);
     m_loudnessTargetLabel->setAlignment(Qt::AlignCenter);
     loudnessRow->addWidget(quietLabel);
     loudnessRow->addWidget(m_loudnessAmountSlider, 1);
@@ -1083,6 +1125,13 @@ void MainWindow::setupEqHistory()
     connect(m_updateAction, &QAction::triggered, this, &MainWindow::onUpdateClicked);
     m_changelogAction = menuBar()->addAction(QStringLiteral("Changelog"));
     connect(m_changelogAction, &QAction::triggered, this, &MainWindow::onChangelogClicked);
+    m_addonsMenu = new QMenu(QStringLiteral("Add-ons"), this);
+    menuBar()->addMenu(m_addonsMenu);
+    connect(m_addonsMenu, &QMenu::aboutToShow, this, [this]() {
+        const unsigned long pid = m_sessionList ? m_sessionList->selectedProcessId() : 0;
+        const QString exePath = pid == 0 ? QString() : AppIconProvider::executablePathForProcess(pid);
+        populateAddonsMenu(m_addonsMenu, m_addonManager, pid, exePath, this);
+    });
 
     m_lastEqSnapshot = readEqState();
     updateEqHistoryActions();
@@ -1553,6 +1602,7 @@ void MainWindow::saveSpectrumSettings()
 
     AppSettings settings = m_settingsStore.settings();
     settings.spectrumEnabled = m_spectrumWidget->isSpectrumEnabled();
+    settings.spectrumLimiterDb = m_spectrumWidget->limiterCeilingDb();
     m_settingsStore.setSettings(settings);
     m_settingsStore.save();
 }
@@ -1621,12 +1671,33 @@ void MainWindow::onResetDynamicsClicked()
 
 AudioChainOrder MainWindow::readAudioChainOrder() const
 {
+    if (m_addonManager && m_sessionList) {
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid != 0) {
+            const Vst3AppAddons addons =
+                m_addonManager->addonsForExe(AppIconProvider::executablePathForProcess(pid));
+            if (addons.occupiedCount() > 0) {
+                return normalizeAudioChainOrder(addons.chain);
+            }
+        }
+    }
     return normalizeAudioChainOrder(m_audioChainOrder);
 }
 
 void MainWindow::applyAudioChainToUi(const AudioChainOrder &order)
 {
-    m_audioChainOrder = normalizeAudioChainOrder(order);
+    const AudioChainOrder normalized = normalizeAudioChainOrder(order);
+    if (m_addonManager && m_sessionList) {
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid != 0) {
+            const QString exePath = AppIconProvider::executablePathForProcess(pid);
+            if (m_addonManager->addonsForExe(exePath).occupiedCount() > 0) {
+                m_addonManager->setChain(pid, exePath, normalized);
+                return;
+            }
+        }
+    }
+    m_audioChainOrder = builtinsOnly(normalized);
 }
 
 void MainWindow::applyAudioChainToEngine()
@@ -1644,14 +1715,28 @@ void MainWindow::applyAudioChainToEngine()
 void MainWindow::saveAudioChainSettings()
 {
     AppSettings settings = m_settingsStore.settings();
-    settings.audioChainOrder = readAudioChainOrder();
+    settings.audioChainOrder = builtinsOnly(m_audioChainOrder);
     m_settingsStore.setSettings(settings);
     m_settingsStore.save();
 }
 
 void MainWindow::onAudioChainClicked()
 {
-    AudioChainDialog dialog(readAudioChainOrder(), this);
+    QStringList addonNames;
+    addonNames.reserve(kAudioChainAddonCount);
+    if (m_addonManager && m_sessionList) {
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid != 0) {
+            const Vst3AppAddons addons =
+                m_addonManager->addonsForExe(AppIconProvider::executablePathForProcess(pid));
+            for (int i = 0; i < kAudioChainAddonCount; ++i) {
+                addonNames.append(addons.pluginSlots[static_cast<size_t>(i)].occupied
+                                      ? addons.pluginSlots[static_cast<size_t>(i)].name
+                                      : QString());
+            }
+        }
+    }
+    AudioChainDialog dialog(readAudioChainOrder(), addonNames, this);
     connect(&dialog, &AudioChainDialog::orderChanged, this, [this](const AudioChainOrder &order) {
         applyAudioChainToUi(order);
         applyAudioChainToEngine();
@@ -1750,6 +1835,11 @@ void MainWindow::onTrayToggleEq(unsigned long processId)
         m_eqSessionManager->disableForProcess(processId);
     } else {
         m_eqSessionManager->restoreForProcess(processId);
+        if (m_addonManager) {
+            m_addonManager->attachToSession(processId,
+                                            AppIconProvider::executablePathForProcess(processId),
+                                            48000.f);
+        }
     }
 
     syncSlidersToSelection();
@@ -1972,10 +2062,15 @@ void MainWindow::applySettings(const AppSettings &settings)
 
     applyAudioChainToUi(settings.audioChainOrder);
     applyAudioChainToEngine();
+    if (m_addonManager) {
+        m_addonManager->setExtraFolders(settings.vst3ExtraFolders);
+    }
 
     if (m_spectrumWidget) {
         m_spectrumWidget->setSpectrumEnabled(settings.spectrumEnabled);
+        m_spectrumWidget->setLimiterCeilingDb(settings.spectrumLimiterDb);
     }
+    m_audioEngine.setOutputLimiterThreshold(MixLimiter::dbToLinear(settings.spectrumLimiterDb));
 
     setEqUiModeAdvanced(settings.eqUiModeAdvanced, false);
 

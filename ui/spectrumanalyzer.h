@@ -40,7 +40,5 @@ public:
                                      int sampleRate,
                                      int barCount,
                                      QVector<float> *magnitudes);
-
-private:
     static void fftRadix2(std::vector<float> &real, std::vector<float> &imag);
 };

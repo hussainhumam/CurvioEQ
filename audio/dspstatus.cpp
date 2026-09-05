@@ -10,7 +10,8 @@
 #include "dynamicsprocessor.h"
 #include "dynamicrangesettings.h"
 #include "loudnessprocessor.h"
-
+#include "mixlimiter.h"
+#include "spectrumceilinglimiter.h"
 #include "spscringbuffer.h"
 #include "ui/appconstants.h"
 
@@ -703,15 +704,15 @@ int runLoudnessBypassTest()
     return 0;
 }
 
-int runLoudnessQuietBoostTest()
+bool measureLoudnessQuietBoost(int amount, float *boostDb)
 {
     LoudnessProcessor processor;
     processor.setSampleRate(48000.f);
     processor.setEnabled(true);
-    processor.setAmount(DynamicRangeSettings::kLoudnessMax);
+    processor.setAmount(amount);
 
     constexpr int kFrames = 48000;
-    constexpr float kQuietAmplitude = 0.03162f; // ~ -30 dBFS
+    constexpr float kQuietAmplitude = 0.1f; // ~ -20 dBFS, so −23 vs −14 targets do not both hit the 12 dB cap
     std::vector<float> buffer(kFrames * 2);
     for (int i = 0; i < kFrames; ++i) {
         const float sample = kQuietAmplitude * std::sin(2.f * 3.14159265358979323846f * 440.f * static_cast<float>(i) / 48000.f);
@@ -735,18 +736,38 @@ int runLoudnessQuietBoostTest()
 
     for (float sample : buffer) {
         if (!std::isfinite(sample)) {
-            dspPrint(true, "  [FAIL] loudness quiet boost (non-finite)\n");
-            return 1;
+            return false;
         }
     }
 
-    const float boostDb = 20.f * std::log10(outputRms / std::max(inputRms, 1e-9f));
-    if (boostDb < 6.f) {
-        dspPrint(true, "  [FAIL] loudness quiet boost (boost=%.2f dB)\n", boostDb);
+    *boostDb = 20.f * std::log10(outputRms / std::max(inputRms, 1e-9f));
+    return true;
+}
+
+int runLoudnessQuietBoostTest()
+{
+    float maxBoostDb = 0.f;
+    if (!measureLoudnessQuietBoost(DynamicRangeSettings::kLoudnessMax, &maxBoostDb)) {
+        dspPrint(true, "  [FAIL] loudness quiet boost (non-finite)\n");
+        return 1;
+    }
+    if (maxBoostDb < 4.f || maxBoostDb > 12.5f) {
+        dspPrint(true, "  [FAIL] loudness quiet boost at −14 LUFS (boost=%.2f dB)\n", maxBoostDb);
         return 1;
     }
 
-    dspPrint(false, "  [OK]   loudness quiet boost (boost=%.2f dB)\n", boostDb);
+    constexpr int kMidAmount = DynamicRangeSettings::kLoudnessMax / 2;
+    float midBoostDb = 0.f;
+    if (!measureLoudnessQuietBoost(kMidAmount, &midBoostDb)) {
+        dspPrint(true, "  [FAIL] loudness mid boost (non-finite)\n");
+        return 1;
+    }
+    if (midBoostDb < 1.f || midBoostDb >= maxBoostDb - 0.3f) {
+        dspPrint(true, "  [FAIL] loudness gradual boost (mid=%.2f dB max=%.2f dB)\n", midBoostDb, maxBoostDb);
+        return 1;
+    }
+
+    dspPrint(false, "  [OK]   loudness quiet boost (mid=%.2f dB max=%.2f dB)\n", midBoostDb, maxBoostDb);
     return 0;
 }
 
@@ -792,8 +813,8 @@ void applyAudioChainForTest(const AudioChainOrder &order,
                             int frameCount,
                             int channelCount)
 {
-    for (AudioChainStage stage : order.stages) {
-        switch (stage) {
+    for (int i = 0; i < order.count; ++i) {
+        switch (order.stages[static_cast<size_t>(i)]) {
         case AudioChainStage::Eq:
             eq->process(buffer, frameCount, channelCount);
             break;
@@ -804,6 +825,10 @@ void applyAudioChainForTest(const AudioChainOrder &order,
             break;
         case AudioChainStage::VirtualSurround:
         case AudioChainStage::Dynamics:
+        case AudioChainStage::Addon0:
+        case AudioChainStage::Addon1:
+        case AudioChainStage::Addon2:
+        case AudioChainStage::Addon3:
             break;
         }
     }
@@ -886,6 +911,81 @@ int runAudioChainOrderTest()
     return 0;
 }
 
+int runSessionLimiterCeilingTest()
+{
+    auto toneAmplitude = [](const std::vector<float> &samples, int frames, int start, float freq) {
+        double real = 0.0;
+        double imag = 0.0;
+        const int count = frames - start;
+        for (int i = start; i < frames; ++i) {
+            const double phase =
+                2.0 * 3.14159265358979323846 * static_cast<double>(freq) * static_cast<double>(i) / 48000.0;
+            const double sample = static_cast<double>(samples[static_cast<size_t>(i * 2)]);
+            real += sample * std::cos(phase);
+            imag += sample * std::sin(phase);
+        }
+        return static_cast<float>(2.0 * std::hypot(real, imag) / std::max(1, count));
+    };
+
+    SpectrumCeilingLimiter limiter;
+    limiter.setSampleRate(48000.f);
+    limiter.setThreshold(0.5f);
+
+    constexpr int kFrames = 48000;
+    constexpr float kLowAmp = 0.20f;
+    constexpr float kHighAmp = 0.90f;
+    std::vector<float> samples(static_cast<size_t>(kFrames * 2));
+    for (int i = 0; i < kFrames; ++i) {
+        const float t = static_cast<float>(i) / 48000.f;
+        const float sample = kLowAmp * std::sin(2.f * 3.14159265358979323846f * 80.f * t)
+            + kHighAmp * std::sin(2.f * 3.14159265358979323846f * 4000.f * t);
+        samples[static_cast<size_t>(i * 2)] = sample;
+        samples[static_cast<size_t>(i * 2 + 1)] = sample;
+    }
+
+    limiter.process(samples.data(), kFrames, 2);
+
+    bool allFinite = true;
+    for (int i = kFrames / 2; i < kFrames; ++i) {
+        if (!std::isfinite(samples[static_cast<size_t>(i * 2)])
+            || !std::isfinite(samples[static_cast<size_t>(i * 2 + 1)])) {
+            allFinite = false;
+            break;
+        }
+    }
+    if (!allFinite) {
+        dspPrint(true, "  [FAIL] session limiter ceiling (non-finite)\n");
+        return 1;
+    }
+
+    const float lowOut = toneAmplitude(samples, kFrames, kFrames / 2, 80.f);
+    const float highOut = toneAmplitude(samples, kFrames, kFrames / 2, 4000.f);
+
+    if (lowOut < kLowAmp * 0.75f || lowOut > kLowAmp * 1.25f) {
+        dspPrint(true, "  [FAIL] session limiter quiet band (80 Hz=%.3f)\n", lowOut);
+        return 1;
+    }
+    if (highOut > kHighAmp * 0.75f || highOut < 0.20f) {
+        dspPrint(true, "  [FAIL] session limiter hot band (4 kHz=%.3f)\n", highOut);
+        return 1;
+    }
+
+    SpectrumCeilingLimiter bypass;
+    bypass.setSampleRate(48000.f);
+    bypass.setThreshold(1.f);
+    std::vector<float> bypassSamples(static_cast<size_t>(256 * 2), 0.4f);
+    bypass.process(bypassSamples.data(), 256, 2);
+    for (float sample : bypassSamples) {
+        if (std::fabs(sample - 0.4f) > 1e-6f) {
+            dspPrint(true, "  [FAIL] session limiter bypass at 0 dB\n");
+            return 1;
+        }
+    }
+
+    dspPrint(false, "  [OK]   session limiter ceiling (80 Hz=%.3f 4 kHz=%.3f)\n", lowOut, highOut);
+    return 0;
+}
+
 int runVerificationChecks(bool includeRingBufferStress)
 {
     dspPrint(false, "Running DSP verification checks...\n");
@@ -909,6 +1009,7 @@ int runVerificationChecks(bool includeRingBufferStress)
     failures += runLoudnessQuietBoostTest();
     failures += runLoudnessHotLimitTest();
     failures += runAudioChainOrderTest();
+    failures += runSessionLimiterCeilingTest();
     failures += includeRingBufferStress ? runRingBufferStressTest() : runRingBufferQuickTest();
     dspPrint(false, "\n");
 
@@ -941,10 +1042,11 @@ void printDspArchitectureState()
                AppConstants::kTargetRingFillFrames,
                AppConstants::kHighRingFillFrames);
     dspPrint(false, "  Mix bus          : soft-knee limiter\n");
+    dspPrint(false, "  Session ceiling  : per-band STFT limiter (spectrum line)\n");
     dspPrint(false, "  Pipeline         : user-ordered EQ / HRTF / dynamics / loudness (resample last)\n");
     dspPrint(false, "  Virtual surround : 8-speaker upmix + HRIR convolution\n");
     dspPrint(false, "  Dynamic range    : stereo-linked soft-knee compressor (Wide/Tight)\n");
-    dspPrint(false, "  Loudness         : K-weighted gain rider (-24 to -14 LUFS target)\n");
+    dspPrint(false, "  Loudness         : BS.1770-4 momentary rider (target −23 to −14 LUFS)\n");
     dspPrint(false, "  Thread hygiene   : FTZ/DAZ + Pro Audio mixer thread\n");
     dspPrint(false, "==========================\n");
 }

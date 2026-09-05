@@ -1,6 +1,9 @@
 dist/
 build/
 
+# Nested clone of Steinberg VST3 pluginterfaces (we vendor the headers only)
+third_party/pluginterfaces/.git/
+
 # Qt Creator / CMake user settings
 .qtcreator/
 *.user

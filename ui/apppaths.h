@@ -6,6 +6,7 @@
 class AppPaths
 {
 public:
+    static bool isPortable();
     static QString dataRoot();
     static QString soundModsRoot();
     static QStringList settingsSearchRoots();

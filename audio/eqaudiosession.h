@@ -10,6 +10,7 @@
 #include "dynamicsprocessor.h"
 #include "dynamicrangesettings.h"
 #include "loudnessprocessor.h"
+#include "spectrumceilinglimiter.h"
 #include "virtualsurroundprocessor.h"
 #include "virtualsurroundsettings.h"
 
@@ -19,10 +20,12 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 class SpectrumCapture;
+class Vst3Plugin;
 
 struct SessionStartConfig {
     unsigned long processId = 0;
@@ -60,6 +63,9 @@ public:
     void setVirtualSurroundSettings(const VirtualSurroundSettings &settings);
     void setDynamicRangeSettings(const DynamicRangeSettings &settings);
     void setAudioChainOrder(const AudioChainOrder &order);
+    void setOutputGain(float gain);
+    void setOutputLimiterThreshold(float linearPeak);
+    void setAddon(int slot, std::shared_ptr<Vst3Plugin> plugin);
 
     QString sinkDeviceId() const { return m_sinkDeviceId; }
     int routedProcessCount() const { return m_routedProcessCount; }
@@ -96,6 +102,7 @@ private:
     VirtualSurroundProcessor m_virtualSurroundProcessor;
     DynamicsProcessor m_dynamicsProcessor;
     LoudnessProcessor m_loudnessProcessor;
+    SpectrumCeilingLimiter m_outputLimiter{1.f};
     Resampler m_resampler;
     ClockSync m_clockSync;
     std::shared_ptr<SpscRingBuffer> m_ringBuffer;
@@ -103,7 +110,10 @@ private:
     SpectrumCapture *m_spectrumCapture = nullptr;
     std::atomic<unsigned long> *m_spectrumProcessId = nullptr;
 
-    std::atomic<uint32_t> m_audioChainPacked{packAudioChainOrder(defaultAudioChainOrder())};
+    std::atomic<uint64_t> m_audioChainPacked{packAudioChainOrder(defaultAudioChainOrder())};
+    std::array<std::shared_ptr<Vst3Plugin>, kAudioChainAddonCount> m_addons;
+    std::mutex m_addonMutex;
+    std::atomic<float> m_outputGain{1.f};
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stopRequested{false};
     std::function<void(unsigned long processId, const QString &errorMessage)> m_onThreadFinished;

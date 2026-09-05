@@ -101,6 +101,7 @@ QJsonObject dynamicsToJson(const DynamicRangeSettings &dynamics)
     object.insert(QStringLiteral("enabled"), dynamics.enabled);
     object.insert(QStringLiteral("amount"), dynamics.amount);
     object.insert(QStringLiteral("loudnessAmount"), dynamics.loudnessAmount);
+    object.insert(QStringLiteral("loudnessScale"), DynamicRangeSettings::kLoudnessScaleV3);
     return object;
 }
 
@@ -110,17 +111,24 @@ DynamicRangeSettings dynamicsFromJson(const QJsonObject &object)
     dynamics.enabled = object.value(QStringLiteral("enabled")).toBool(false);
     dynamics.amount = clampDynamicRangeAmount(
         object.value(QStringLiteral("amount")).toInt(DynamicRangeSettings::kAmountDefault));
-    dynamics.loudnessAmount = clampLoudnessAmount(
-        object.value(QStringLiteral("loudnessAmount")).toInt(DynamicRangeSettings::kLoudnessDefault));
+    int loudnessAmount =
+        object.value(QStringLiteral("loudnessAmount")).toInt(DynamicRangeSettings::kLoudnessDefault);
+    const int loudnessScale = object.value(QStringLiteral("loudnessScale")).toInt(1);
+    if (loudnessScale < DynamicRangeSettings::kLoudnessScaleV2) {
+        loudnessAmount = migrateLegacyLoudnessAmount(loudnessAmount);
+    } else if (loudnessScale < DynamicRangeSettings::kLoudnessScaleV3) {
+        loudnessAmount = migrateV2LoudnessAmount(loudnessAmount);
+    }
+    dynamics.loudnessAmount = clampLoudnessAmount(loudnessAmount);
     return dynamics;
 }
 
 QJsonArray audioChainToJson(const AudioChainOrder &order)
 {
     QJsonArray array;
-    const AudioChainOrder chain = normalizeAudioChainOrder(order);
-    for (AudioChainStage stage : chain.stages) {
-        array.append(QString::fromLatin1(audioChainStageId(stage)));
+    const AudioChainOrder chain = builtinsOnly(normalizeAudioChainOrder(order));
+    for (int i = 0; i < chain.count; ++i) {
+        array.append(QString::fromLatin1(audioChainStageId(chain.stages[static_cast<size_t>(i)])));
     }
     return array;
 }
@@ -128,16 +136,17 @@ QJsonArray audioChainToJson(const AudioChainOrder &order)
 AudioChainOrder audioChainFromJson(const QJsonArray &array)
 {
     AudioChainOrder loaded = defaultAudioChainOrder();
-    if (array.size() != kAudioChainStageCount) {
+    if (array.isEmpty() || array.size() > kAudioChainBuiltinCount) {
         return loaded;
     }
-    for (int i = 0; i < kAudioChainStageCount; ++i) {
+    loaded.count = 0;
+    for (int i = 0; i < array.size(); ++i) {
         AudioChainStage stage = AudioChainStage::Eq;
         const QByteArray id = array.at(i).toString().toUtf8();
-        if (!audioChainStageFromId(id.constData(), &stage)) {
+        if (!audioChainStageFromId(id.constData(), &stage) || audioChainStageIsAddon(stage)) {
             return defaultAudioChainOrder();
         }
-        loaded.stages[static_cast<size_t>(i)] = stage;
+        loaded.stages[static_cast<size_t>(loaded.count++)] = stage;
     }
     return normalizeAudioChainOrder(loaded);
 }

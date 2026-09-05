@@ -2,8 +2,10 @@
 
 #include "audiopolicyrouter.h"
 #include "audiothreadutils.h"
+#include "audiosessionvolume.h"
 #include "log.h"
 #include "processloopbackcapture.h"
+#include "vst3/vst3plugin.h"
 #include "ui/appconstants.h"
 #include "ui/spectrumanalyzer.h"
 
@@ -12,6 +14,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 namespace {
@@ -112,6 +115,7 @@ bool EqAudioSession::start(SessionStartConfig config, QString *errorMessage)
     m_loudnessProcessor.setEnabled(config.dynamicRange.enabled);
     m_loudnessProcessor.setAmount(config.dynamicRange.loudnessAmount);
     m_loudnessProcessor.setSampleRate(config.mixSampleRate);
+    m_outputLimiter.setSampleRate(config.mixSampleRate);
     m_ringBuffer->configure(m_mixChannelCount, AppConstants::kSessionRingBufferFrames);
     m_clockSync.configure(AppConstants::kSessionRingBufferFrames,
                           AppConstants::kTargetRingFillFrames,
@@ -267,6 +271,29 @@ void EqAudioSession::setAudioChainOrder(const AudioChainOrder &order)
     m_audioChainPacked.store(packAudioChainOrder(order), std::memory_order_release);
 }
 
+void EqAudioSession::setOutputGain(float gain)
+{
+    const float clamped = std::clamp(gain, 1.f, AudioSessionVolume::kMaxOutputGain);
+    m_outputGain.store(clamped, std::memory_order_release);
+}
+
+void EqAudioSession::setOutputLimiterThreshold(float linearPeak)
+{
+    m_outputLimiter.setThreshold(linearPeak);
+}
+
+void EqAudioSession::setAddon(int slot, std::shared_ptr<Vst3Plugin> plugin)
+{
+    if (slot < 0 || slot >= kAudioChainAddonCount) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_addonMutex);
+    m_addons[static_cast<size_t>(slot)] = std::move(plugin);
+    if (m_addons[static_cast<size_t>(slot)]) {
+        m_addons[static_cast<size_t>(slot)]->setSampleRate(m_mixSampleRate, kFrameChunk);
+    }
+}
+
 void EqAudioSession::processCaptureChunk(CaptureBuffers *buffers, int framesRead)
 {
     if (!buffers || framesRead <= 0 || !m_ringBuffer) {
@@ -289,7 +316,8 @@ void EqAudioSession::processCaptureChunk(CaptureBuffers *buffers, int framesRead
     int framesToWrite = framesRead;
 
     const AudioChainOrder order = unpackAudioChainOrder(m_audioChainPacked.load(std::memory_order_acquire));
-    for (AudioChainStage stage : order.stages) {
+    for (int i = 0; i < order.count; ++i) {
+        const AudioChainStage stage = order.stages[static_cast<size_t>(i)];
         switch (stage) {
         case AudioChainStage::Eq:
             m_eqProcessor.process(writeBuffer, framesRead, writeChannelCount);
@@ -311,8 +339,25 @@ void EqAudioSession::processCaptureChunk(CaptureBuffers *buffers, int framesRead
                 m_loudnessProcessor.process(writeBuffer, framesRead, writeChannelCount);
             }
             break;
+        case AudioChainStage::Addon0:
+        case AudioChainStage::Addon1:
+        case AudioChainStage::Addon2:
+        case AudioChainStage::Addon3: {
+            const int slot = audioChainAddonIndex(stage);
+            std::shared_ptr<Vst3Plugin> plugin;
+            {
+                std::lock_guard<std::mutex> lock(m_addonMutex);
+                plugin = m_addons[static_cast<size_t>(slot)];
+            }
+            if (plugin) {
+                plugin->process(writeBuffer, framesRead, writeChannelCount);
+            }
+            break;
+        }
         }
     }
+
+    m_outputLimiter.process(writeBuffer, framesRead, writeChannelCount);
 
     if (feedSpectrumThisChunk) {
         m_spectrumCapture->pushBeforeAndAfter(buffers->eqInput.data(),
@@ -337,6 +382,15 @@ void EqAudioSession::processCaptureChunk(CaptureBuffers *buffers, int framesRead
     if (writeChannelCount != m_mixChannelCount) {
         upmixChannels(writeBuffer, framesToWrite, writeChannelCount, m_mixChannelCount, &buffers->mixFormat);
         writeBuffer = buffers->mixFormat.data();
+        writeChannelCount = m_mixChannelCount;
+    }
+
+    const float outputGain = m_outputGain.load(std::memory_order_acquire);
+    if (outputGain > 1.001f) {
+        const int sampleCount = framesToWrite * writeChannelCount;
+        for (int sample = 0; sample < sampleCount; ++sample) {
+            writeBuffer[sample] *= outputGain;
+        }
     }
 
     if (m_clockSync.shouldSkipWrite(m_ringBuffer->availableFrames())) {
@@ -382,7 +436,16 @@ void EqAudioSession::threadMain()
     m_virtualSurroundProcessor.setSampleRate(buffers.captureRate);
     m_dynamicsProcessor.setSampleRate(buffers.captureRate);
     m_loudnessProcessor.setSampleRate(buffers.captureRate);
+    m_outputLimiter.setSampleRate(buffers.captureRate);
     m_resampler.configure(buffers.captureRate, m_mixSampleRate, buffers.captureChannelCount);
+    {
+        std::lock_guard<std::mutex> lock(m_addonMutex);
+        for (auto &plugin : m_addons) {
+            if (plugin) {
+                plugin->setSampleRate(buffers.captureRate, kFrameChunk);
+            }
+        }
+    }
 
     const int maxPipelineChannels = std::max(buffers.captureChannelCount, m_mixChannelCount);
     buffers.capture.assign(static_cast<size_t>(kFrameChunk * buffers.captureChannelCount), 0.f);

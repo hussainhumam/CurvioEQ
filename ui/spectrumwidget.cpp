@@ -5,15 +5,21 @@
 #include "appconstants.h"
 
 #include <QCheckBox>
+#include <QCursor>
+#include <QEvent>
+#include <QFont>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QResizeEvent>
 #include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -58,13 +64,145 @@ QPainterPath buildFilledCurvePath(const QRectF &plotRect, const QVector<float> &
     return path;
 }
 
+constexpr int kPlotLeftMargin = 8;
+constexpr int kPlotTopMargin = 4;
+constexpr int kPlotBottomMargin = 8;
+constexpr int kRightScaleWidth = 58;
+constexpr int kHandleWidth = 54;
+constexpr int kHandleHeight = 18;
+constexpr float kScaleMarksDb[] = {0.f, -12.f, -24.f, -36.f, -48.f};
+
+QString formatCeilingDb(float db)
+{
+    if (db > -0.05f) {
+        return QStringLiteral("0.0 dB");
+    }
+    return QStringLiteral("%1 dB").arg(db, 0, 'f', 1);
+}
+
+QString formatScaleDb(float db)
+{
+    if (db > -0.05f) {
+        return QStringLiteral("0");
+    }
+    return QString::number(static_cast<int>(std::lround(db)));
+}
+
 } // namespace
 
 SpectrumPlotArea::SpectrumPlotArea(QWidget *parent)
     : QWidget(parent)
+    , m_handleLabel(new QLabel(this))
 {
     setMinimumHeight(56);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    setMouseTracking(true);
+
+    m_handleLabel->setAlignment(Qt::AlignCenter);
+    m_handleLabel->setAutoFillBackground(false);
+    m_handleLabel->setCursor(Qt::OpenHandCursor);
+    m_handleLabel->installEventFilter(this);
+    layoutHandle();
+}
+
+QRect SpectrumPlotArea::plotRect() const
+{
+    return QRect(kPlotLeftMargin,
+                 kPlotTopMargin,
+                 std::max(1, width() - kPlotLeftMargin - kRightScaleWidth),
+                 std::max(1, height() - kPlotTopMargin - kPlotBottomMargin));
+}
+
+QRect SpectrumPlotArea::handleRect() const
+{
+    if (m_handleLabel) {
+        return m_handleLabel->geometry();
+    }
+    const QRect plot = plotRect();
+    const int y = std::clamp(dbToY(m_ceilingDb) - kHandleHeight / 2,
+                             plot.top(),
+                             plot.bottom() - kHandleHeight);
+    return QRect(plot.right() + 3, y, kHandleWidth, kHandleHeight);
+}
+
+void SpectrumPlotArea::layoutHandle()
+{
+    if (!m_handleLabel) {
+        return;
+    }
+    m_handleLabel->setText(formatCeilingDb(m_ceilingDb));
+    m_handleLabel->adjustSize();
+    const QRect plot = plotRect();
+    const int labelWidth = std::max(m_handleLabel->width(), kHandleWidth - 4);
+    const int labelHeight = std::max(m_handleLabel->height(), kHandleHeight);
+    m_handleLabel->resize(labelWidth, labelHeight);
+    const int y = std::clamp(dbToY(m_ceilingDb) - labelHeight / 2,
+                             plot.top(),
+                             std::max(plot.top(), plot.bottom() - labelHeight));
+    m_handleLabel->move(plot.right() + 4, y);
+}
+
+void SpectrumPlotArea::setGrabCursor(bool grabbing)
+{
+    const Qt::CursorShape shape = grabbing ? Qt::ClosedHandCursor : Qt::OpenHandCursor;
+    setCursor(shape);
+    if (m_handleLabel) {
+        m_handleLabel->setCursor(shape);
+    }
+}
+
+bool SpectrumPlotArea::isNearHandle(const QPoint &pos) const
+{
+    return handleRect().adjusted(-4, -2, 4, 2).contains(pos);
+}
+
+float SpectrumPlotArea::yToDb(int y) const
+{
+    const QRect area = plotRect();
+    const float height = static_cast<float>(std::max(1, area.height()));
+    const float t = std::clamp(static_cast<float>(y - area.top()) / height, 0.f, 1.f);
+    const float db = t * AppConstants::kSpectrumLimiterMinDb;
+    return std::clamp(db, AppConstants::kSpectrumLimiterMinDb, AppConstants::kSpectrumLimiterMaxDb);
+}
+
+int SpectrumPlotArea::dbToY(float db) const
+{
+    const QRect area = plotRect();
+    const float clamped = std::clamp(db, AppConstants::kSpectrumLimiterMinDb, AppConstants::kSpectrumLimiterMaxDb);
+    const float span = 0.f - AppConstants::kSpectrumLimiterMinDb;
+    const float t = (0.f - clamped) / span;
+    return area.top() + static_cast<int>(std::lround(t * static_cast<float>(area.height())));
+}
+
+bool SpectrumPlotArea::isNearCeiling(int y) const
+{
+    return std::abs(y - dbToY(m_ceilingDb)) <= AppConstants::kSpectrumLimiterGrabPx;
+}
+
+void SpectrumPlotArea::applyCeilingFromY(int y)
+{
+    const float db = std::round(yToDb(y) * 10.f) / 10.f;
+    if (std::abs(db - m_ceilingDb) < 0.05f) {
+        return;
+    }
+    m_ceilingDb = db;
+    layoutHandle();
+    update();
+    emit ceilingChanged(m_ceilingDb);
+}
+
+void SpectrumPlotArea::updateHoverCursor(const QPoint &pos)
+{
+    const bool overControl = m_dragging || isNearHandle(pos)
+        || (isNearCeiling(pos.y()) && plotRect().contains(pos));
+    if (overControl) {
+        setGrabCursor(m_dragging);
+    } else {
+        unsetCursor();
+        if (m_handleLabel) {
+            m_handleLabel->setCursor(Qt::OpenHandCursor);
+        }
+    }
 }
 
 void SpectrumPlotArea::setCurveData(const QVector<float> &beforeBars,
@@ -77,6 +215,17 @@ void SpectrumPlotArea::setCurveData(const QVector<float> &beforeBars,
     update();
 }
 
+void SpectrumPlotArea::setCeilingDb(float db)
+{
+    const float clamped = std::clamp(db, AppConstants::kSpectrumLimiterMinDb, AppConstants::kSpectrumLimiterMaxDb);
+    if (std::abs(clamped - m_ceilingDb) < 0.05f) {
+        return;
+    }
+    m_ceilingDb = clamped;
+    layoutHandle();
+    update();
+}
+
 void SpectrumPlotArea::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event)
@@ -85,43 +234,151 @@ void SpectrumPlotArea::paintEvent(QPaintEvent *event)
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.fillRect(rect(), palette().window());
 
-    constexpr int margin = 8;
-    const QRect plotRect(margin, 4, std::max(1, width() - margin * 2), std::max(1, height() - margin));
-
-    painter.fillRect(plotRect, palette().alternateBase());
+    const QRect plot = plotRect();
+    painter.fillRect(plot, palette().alternateBase());
     painter.setPen(palette().mid().color());
-    painter.drawRect(plotRect);
+    painter.drawRect(plot);
+
+    QFont scaleFont = font();
+    scaleFont.setPointSizeF(std::max(7.0, font().pointSizeF() - 1.5));
+    painter.setFont(scaleFont);
 
     QColor gridColor = palette().mid().color();
-    gridColor.setAlpha(100);
-    painter.setPen(gridColor);
-    for (int i = 1; i <= 3; ++i) {
-        const int y = plotRect.top() + (plotRect.height() * i) / 4;
-        painter.drawLine(plotRect.left() + 1, y, plotRect.right() - 1, y);
+    gridColor.setAlpha(90);
+    QColor scaleColor = palette().text().color();
+    scaleColor.setAlpha(160);
+
+    for (float markDb : kScaleMarksDb) {
+        const int y = std::clamp(dbToY(markDb), plot.top(), plot.bottom());
+        painter.setPen(gridColor);
+        painter.drawLine(plot.left() + 1, y, plot.right() - 1, y);
+        painter.drawLine(plot.right() + 1, y, plot.right() + 6, y);
+        const int ceilingY = dbToY(m_ceilingDb);
+        if (std::abs(y - ceilingY) < handleRect().height() / 2 + 2) {
+            continue;
+        }
+        painter.setPen(scaleColor);
+        const QRect labelRect(plot.right() + 8, y - 8, kRightScaleWidth - 12, 16);
+        painter.drawText(labelRect, Qt::AlignLeft | Qt::AlignVCenter, formatScaleDb(markDb));
     }
 
-    if (!m_showCurves) {
+    if (m_showCurves) {
+        const QRectF plotArea(static_cast<float>(plot.left() + 1),
+                              static_cast<float>(plot.top() + 1),
+                              static_cast<float>(plot.width() - 2),
+                              static_cast<float>(plot.height() - 2));
+
+        const QPainterPath beforePath = buildFilledCurvePath(plotArea, m_beforeBars);
+        if (!beforePath.isEmpty()) {
+            painter.fillPath(beforePath, QColor(140, 140, 140, 180));
+            painter.setPen(QPen(QColor(120, 120, 120, 200), 1.2));
+            painter.drawPath(beforePath);
+        }
+
+        const QPainterPath afterPath = buildFilledCurvePath(plotArea, m_afterBars);
+        if (!afterPath.isEmpty()) {
+            painter.fillPath(afterPath, QColor(40, 167, 69, 200));
+            painter.setPen(QPen(QColor(30, 140, 55, 230), 1.2));
+            painter.drawPath(afterPath);
+        }
+    }
+
+    const QColor accent = palette().highlight().color();
+    const int ceilingY = std::clamp(dbToY(m_ceilingDb), plot.top(), plot.bottom());
+    QRect ceilingBand(plot.left() + 1, plot.top() + 1, std::max(1, plot.width() - 2),
+                      std::max(0, ceilingY - plot.top()));
+    QColor cutFill = accent;
+    cutFill.setAlpha(36);
+    painter.fillRect(ceilingBand, cutFill);
+
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    QColor lineColor = accent;
+    lineColor.setAlpha(200);
+    QPen ceilingPen(lineColor, 1.0);
+    ceilingPen.setStyle(Qt::DashLine);
+    ceilingPen.setDashPattern({2, 3});
+    painter.setPen(ceilingPen);
+    painter.drawLine(plot.left() + 1, ceilingY, plot.right() - 1, ceilingY);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    const QRect handle = handleRect();
+    painter.setPen(QPen(lineColor, 1.0));
+    painter.drawLine(plot.right() + 1, ceilingY, handle.left(), ceilingY);
+}
+
+void SpectrumPlotArea::mousePressEvent(QMouseEvent *event)
+{
+    const QRect plot = plotRect();
+    const bool onHandle = isNearHandle(event->pos());
+    const bool onLine = isNearCeiling(event->pos().y()) && plot.contains(event->pos());
+    if (event->button() != Qt::LeftButton || (!onHandle && !onLine)) {
+        QWidget::mousePressEvent(event);
         return;
     }
 
-    const QRectF plotArea(static_cast<float>(plotRect.left() + 1),
-                          static_cast<float>(plotRect.top() + 1),
-                          static_cast<float>(plotRect.width() - 2),
-                          static_cast<float>(plotRect.height() - 2));
+    m_dragging = true;
+    grabMouse();
+    setGrabCursor(true);
+    applyCeilingFromY(event->pos().y());
+    event->accept();
+}
 
-    const QPainterPath beforePath = buildFilledCurvePath(plotArea, m_beforeBars);
-    if (!beforePath.isEmpty()) {
-        painter.fillPath(beforePath, QColor(140, 140, 140, 180));
-        painter.setPen(QPen(QColor(120, 120, 120, 200), 1.2));
-        painter.drawPath(beforePath);
+void SpectrumPlotArea::mouseMoveEvent(QMouseEvent *event)
+{
+    if (m_dragging) {
+        applyCeilingFromY(event->pos().y());
+        event->accept();
+        return;
     }
 
-    const QPainterPath afterPath = buildFilledCurvePath(plotArea, m_afterBars);
-    if (!afterPath.isEmpty()) {
-        painter.fillPath(afterPath, QColor(40, 167, 69, 200));
-        painter.setPen(QPen(QColor(30, 140, 55, 230), 1.2));
-        painter.drawPath(afterPath);
+    updateHoverCursor(event->pos());
+    QWidget::mouseMoveEvent(event);
+}
+
+void SpectrumPlotArea::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || !m_dragging) {
+        QWidget::mouseReleaseEvent(event);
+        return;
     }
+
+    m_dragging = false;
+    releaseMouse();
+    updateHoverCursor(event->pos());
+    emit ceilingEditFinished();
+    event->accept();
+}
+
+void SpectrumPlotArea::leaveEvent(QEvent *event)
+{
+    if (!m_dragging) {
+        unsetCursor();
+        if (m_handleLabel) {
+            m_handleLabel->setCursor(Qt::OpenHandCursor);
+        }
+    }
+    QWidget::leaveEvent(event);
+}
+
+void SpectrumPlotArea::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    layoutHandle();
+}
+
+bool SpectrumPlotArea::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_handleLabel && event->type() == QEvent::MouseButtonPress) {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() == Qt::LeftButton) {
+            m_dragging = true;
+            grabMouse();
+            setGrabCursor(true);
+            applyCeilingFromY(m_handleLabel->mapToParent(mouse->pos()).y());
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 SpectrumWidget::SpectrumWidget(QWidget *parent)
@@ -145,7 +402,7 @@ SpectrumWidget::SpectrumWidget(QWidget *parent)
 
     m_enableCheckBox->setChecked(true);
 
-    m_subtitleLabel->setText(QStringLiteral("Live spectrum — no EQ active"));
+    m_subtitleLabel->setText(QStringLiteral("Output ceiling — drag the line"));
     m_subtitleLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
     auto *headerRow = new QHBoxLayout();
@@ -163,6 +420,11 @@ SpectrumWidget::SpectrumWidget(QWidget *parent)
     m_refreshTimer->setInterval(AppConstants::kSpectrumRefreshIntervalMs);
     connect(m_refreshTimer, &QTimer::timeout, this, &SpectrumWidget::onRefreshTimer);
     connect(m_enableCheckBox, &QCheckBox::toggled, this, &SpectrumWidget::onSpectrumToggled);
+    connect(m_plotArea, &SpectrumPlotArea::ceilingChanged, this, [this](float db) {
+        updateSubtitle();
+        emit limiterCeilingChanged(db);
+    });
+    connect(m_plotArea, &SpectrumPlotArea::ceilingEditFinished, this, &SpectrumWidget::limiterCeilingEditFinished);
 }
 
 void SpectrumWidget::setCapture(SpectrumCapture *capture)
@@ -187,7 +449,8 @@ void SpectrumWidget::setEqActive(bool active)
     if (!active) {
         clearCurveBuffers();
     }
-    m_plotArea->setCurveData(m_displayBeforeBars, m_displayAfterBars, m_eqActive);
+    m_plotArea->setCurveData(m_displayBeforeBars, m_displayAfterBars,
+                             m_eqActive && m_enableCheckBox->isChecked());
 }
 
 void SpectrumWidget::setSpectrumEnabled(bool enabled)
@@ -211,6 +474,17 @@ bool SpectrumWidget::isSpectrumEnabled() const
     return m_enableCheckBox->isChecked();
 }
 
+void SpectrumWidget::setLimiterCeilingDb(float db)
+{
+    m_plotArea->setCeilingDb(db);
+    updateSubtitle();
+}
+
+float SpectrumWidget::limiterCeilingDb() const
+{
+    return m_plotArea->ceilingDb();
+}
+
 void SpectrumWidget::onSpectrumToggled(bool checked)
 {
     Q_UNUSED(checked)
@@ -224,10 +498,11 @@ void SpectrumWidget::onSpectrumToggled(bool checked)
 
 void SpectrumWidget::updateSubtitle()
 {
+    const QString ceiling = formatCeilingDb(m_plotArea->ceilingDb());
     if (!m_appName.isEmpty()) {
-        m_subtitleLabel->setText(QStringLiteral("Live spectrum — %1").arg(m_appName));
+        m_subtitleLabel->setText(QStringLiteral("Ceiling %1 — %2").arg(ceiling, m_appName));
     } else {
-        m_subtitleLabel->setText(QStringLiteral("Live spectrum — no EQ active"));
+        m_subtitleLabel->setText(QStringLiteral("Output ceiling %1 — drag the label").arg(ceiling));
     }
 }
 
@@ -248,33 +523,6 @@ void SpectrumWidget::clearCurveBuffers()
     m_smoothedAfterBars.fill(0.f);
     m_displayBeforeBars.fill(0.f);
     m_displayAfterBars.fill(0.f);
-    m_displayScalePeak = AppConstants::kSpectrumYMinPeak;
-}
-
-void SpectrumWidget::scaleBarsForDisplay()
-{
-    float peak = 0.f;
-    for (int i = 0; i < m_smoothedBeforeBars.size(); ++i) {
-        peak = std::max(peak, m_smoothedBeforeBars[i]);
-        peak = std::max(peak, m_smoothedAfterBars[i]);
-    }
-
-    float targetPeak = std::max(peak * AppConstants::kSpectrumYHeadroom, AppConstants::kSpectrumYMinPeak);
-    const float alpha = (targetPeak >= m_displayScalePeak) ? AppConstants::kSpectrumAttackAlpha
-                                                           : AppConstants::kSpectrumReleaseAlpha;
-    m_displayScalePeak += alpha * (targetPeak - m_displayScalePeak);
-    m_displayScalePeak = std::max(m_displayScalePeak, AppConstants::kSpectrumYMinPeak);
-
-    const float scale = m_displayScalePeak;
-    if (m_displayBeforeBars.size() != m_smoothedBeforeBars.size()) {
-        m_displayBeforeBars.resize(m_smoothedBeforeBars.size());
-        m_displayAfterBars.resize(m_smoothedAfterBars.size());
-    }
-
-    for (int i = 0; i < m_smoothedBeforeBars.size(); ++i) {
-        m_displayBeforeBars[i] = std::min(1.f, m_smoothedBeforeBars[i] / scale);
-        m_displayAfterBars[i] = std::min(1.f, m_smoothedAfterBars[i] / scale);
-    }
 }
 
 void SpectrumWidget::applySmoothing(const QVector<float> &target, QVector<float> *smoothed)
@@ -319,6 +567,7 @@ void SpectrumWidget::onRefreshTimer()
 
     applySmoothing(m_beforeBars, &m_smoothedBeforeBars);
     applySmoothing(m_afterBars, &m_smoothedAfterBars);
-    scaleBarsForDisplay();
+    m_displayBeforeBars = m_smoothedBeforeBars;
+    m_displayAfterBars = m_smoothedAfterBars;
     m_plotArea->setCurveData(m_displayBeforeBars, m_displayAfterBars, true);
 }

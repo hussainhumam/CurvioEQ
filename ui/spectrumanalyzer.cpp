@@ -1,5 +1,7 @@
 #include "spectrumanalyzer.h"
 
+#include "appconstants.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -178,12 +180,14 @@ void SpectrumAnalyzer::computeBarMagnitudes(const std::vector<float> &timeDomain
 
         float peak = 0.f;
         for (int bin = bin0; bin <= bin1; ++bin) {
-            const float mag = std::sqrt(real[static_cast<size_t>(bin)] * real[static_cast<size_t>(bin)]
-                                        + imag[static_cast<size_t>(bin)] * imag[static_cast<size_t>(bin)]);
+            const float mag = (4.f / static_cast<float>(n))
+                * std::sqrt(real[static_cast<size_t>(bin)] * real[static_cast<size_t>(bin)]
+                            + imag[static_cast<size_t>(bin)] * imag[static_cast<size_t>(bin)]);
             peak = std::max(peak, mag);
         }
 
-        const float normalized = std::log10(1.f + peak * 8.f) / 2.f;
-        (*magnitudes)[bar] = normalized;
+        const float db = 20.f * std::log10(std::max(peak, 1e-12f));
+        const float span = 0.f - AppConstants::kSpectrumLimiterMinDb;
+        (*magnitudes)[bar] = std::clamp((db - AppConstants::kSpectrumLimiterMinDb) / span, 0.f, 1.f);
     }
 }

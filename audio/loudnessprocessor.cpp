@@ -4,19 +4,26 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
-constexpr float kTargetLoudnessMinDb = -24.f;
-constexpr float kTargetLoudnessMaxDb = -14.f;
+constexpr float kPeakCeiling = 0.944f; // ~ -0.5 dBFS
 constexpr float kMaxBoostDb = 12.f;
 constexpr float kMaxCutDb = 6.f;
-constexpr float kPeakCeiling = 0.944f; // ~ -0.5 dBFS
 constexpr float kLoudnessWindowSeconds = 0.400f;
 constexpr float kAttackSeconds = 0.300f;
 constexpr float kReleaseSeconds = 2.000f;
 constexpr float kMinMeanSquare = 1e-12f;
+constexpr float kLufsOffsetDb = -0.691f;
+
+// ITU-R BS.1770-4 / libebur128 analog prototypes
+constexpr float kPreFilterF0 = 1681.974450955533f;
+constexpr float kPreFilterGainDb = 3.999843853973347f;
+constexpr float kPreFilterQ = 0.7071752369554196f;
+constexpr float kRlbF0 = 38.13547087602444f;
+constexpr float kRlbQ = 0.5003270373238773f;
 
 float coeffForTime(float seconds, float sampleRate)
 {
@@ -28,19 +35,20 @@ float coeffForTime(float seconds, float sampleRate)
 
 } // namespace
 
-void LoudnessProcessor::setHighPassCoeffs(BiquadState *filter, float frequency)
+void LoudnessProcessor::setKWeightingPreFilter(BiquadState *filter)
 {
-    const float omega = 2.f * kPi * frequency / m_sampleRate;
+    const float A = std::pow(10.f, kPreFilterGainDb / 40.f);
+    const float omega = 2.f * kPi * kPreFilterF0 / m_sampleRate;
     const float sinOmega = std::sin(omega);
     const float cosOmega = std::cos(omega);
-    const float alpha = sinOmega / (2.f * 0.707f);
+    const float alpha = sinOmega / (2.f * kPreFilterQ);
 
-    const float b0 = (1.f + cosOmega) * 0.5f;
-    const float b1 = -(1.f + cosOmega);
-    const float b2 = (1.f + cosOmega) * 0.5f;
-    const float a0 = 1.f + alpha;
-    const float a1 = -2.f * cosOmega;
-    const float a2 = 1.f - alpha;
+    float b0 = A * ((A + 1.f) + (A - 1.f) * cosOmega + 2.f * std::sqrt(A) * alpha);
+    float b1 = -2.f * A * ((A - 1.f) + (A + 1.f) * cosOmega);
+    float b2 = A * ((A + 1.f) + (A - 1.f) * cosOmega - 2.f * std::sqrt(A) * alpha);
+    const float a0 = (A + 1.f) - (A - 1.f) * cosOmega + 2.f * std::sqrt(A) * alpha;
+    const float a1 = 2.f * ((A - 1.f) - (A + 1.f) * cosOmega);
+    const float a2 = (A + 1.f) - (A - 1.f) * cosOmega - 2.f * std::sqrt(A) * alpha;
 
     filter->b0 = b0 / a0;
     filter->b1 = b1 / a0;
@@ -49,20 +57,19 @@ void LoudnessProcessor::setHighPassCoeffs(BiquadState *filter, float frequency)
     filter->a2 = a2 / a0;
 }
 
-void LoudnessProcessor::setHighShelfCoeffs(BiquadState *filter, float frequency, float gainDb)
+void LoudnessProcessor::setKWeightingRlbFilter(BiquadState *filter)
 {
-    const float A = std::pow(10.f, gainDb / 40.f);
-    const float omega = 2.f * kPi * frequency / m_sampleRate;
+    const float omega = 2.f * kPi * kRlbF0 / m_sampleRate;
     const float sinOmega = std::sin(omega);
     const float cosOmega = std::cos(omega);
-    const float alpha = sinOmega / (2.f * 0.707f);
+    const float alpha = sinOmega / (2.f * kRlbQ);
 
-    float b0 = A * ((A + 1.f) + (A - 1.f) * cosOmega + 2.f * std::sqrt(A) * alpha);
-    float b1 = -2.f * A * ((A - 1.f) + (A + 1.f) * cosOmega);
-    float b2 = A * ((A + 1.f) + (A - 1.f) * cosOmega - 2.f * std::sqrt(A) * alpha);
-    const float a0 = (A + 1.f) - (A - 1.f) * cosOmega + 2.f * std::sqrt(A) * alpha;
-    const float a1 = 2.f * ((A - 1.f) - (A + 1.f) * cosOmega);
-    const float a2 = (A + 1.f) - (A - 1.f) * cosOmega - 2.f * std::sqrt(A) * alpha;
+    const float b0 = (1.f + cosOmega) * 0.5f;
+    const float b1 = -(1.f + cosOmega);
+    const float b2 = (1.f + cosOmega) * 0.5f;
+    const float a0 = 1.f + alpha;
+    const float a1 = -2.f * cosOmega;
+    const float a2 = 1.f - alpha;
 
     filter->b0 = b0 / a0;
     filter->b1 = b1 / a0;
@@ -115,40 +122,46 @@ void LoudnessProcessor::setSampleRate(float sampleRate)
 
 void LoudnessProcessor::reset()
 {
-    m_meanSquare = kMinMeanSquare;
     m_currentGainDb = 0.f;
-    m_highPassLeft.reset();
-    m_highPassRight.reset();
-    m_highShelfLeft.reset();
-    m_highShelfRight.reset();
+    m_preFilterLeft.reset();
+    m_preFilterRight.reset();
+    m_rlbLeft.reset();
+    m_rlbRight.reset();
+    std::fill(m_momentaryRing.begin(), m_momentaryRing.end(), 0.f);
+    m_momentaryIndex = 0;
+    m_momentaryFilled = 0;
+    m_momentarySum = 0.0;
 }
 
 float LoudnessProcessor::targetLoudnessDbForAmount(int amount)
 {
-    const int clamped = clampLoudnessAmount(amount);
-    if (clamped <= 0) {
-        return kTargetLoudnessMinDb;
+    if (clampLoudnessAmount(amount) <= 0) {
+        return DynamicRangeSettings::kLoudnessQuietLufs;
     }
-    const float mix = static_cast<float>(clamped) / static_cast<float>(DynamicRangeSettings::kLoudnessMax);
-    return kTargetLoudnessMinDb + mix * (kTargetLoudnessMaxDb - kTargetLoudnessMinDb);
+    return loudnessAmountToTargetLufs(amount);
 }
 
 void LoudnessProcessor::updateFilters()
 {
-    setHighPassCoeffs(&m_highPassLeft, 60.f);
-    setHighPassCoeffs(&m_highPassRight, 60.f);
-    setHighShelfCoeffs(&m_highShelfLeft, 4000.f, 4.f);
-    setHighShelfCoeffs(&m_highShelfRight, 4000.f, 4.f);
+    setKWeightingPreFilter(&m_preFilterLeft);
+    setKWeightingPreFilter(&m_preFilterRight);
+    setKWeightingRlbFilter(&m_rlbLeft);
+    setKWeightingRlbFilter(&m_rlbRight);
 
-    m_loudnessCoeff = coeffForTime(kLoudnessWindowSeconds, m_sampleRate);
+    const int windowSamples = std::max(1, static_cast<int>(std::lround(kLoudnessWindowSeconds * m_sampleRate)));
+    m_momentaryRing.assign(static_cast<std::size_t>(windowSamples), 0.f);
+    m_momentaryIndex = 0;
+    m_momentaryFilled = 0;
+    m_momentarySum = 0.0;
+
     m_attackCoeff = coeffForTime(kAttackSeconds, m_sampleRate);
     m_releaseCoeff = coeffForTime(kReleaseSeconds, m_sampleRate);
 }
 
-float LoudnessProcessor::processKWeightedSample(float input, BiquadState *highPass, BiquadState *highShelf)
+float LoudnessProcessor::processKWeightedSample(float input, BiquadState *preFilter, BiquadState *rlb)
 {
-    const float hp = highPass->processSample(input);
-    return highShelf->processSample(hp);
+    const float pre = preFilter->processSample(input);
+    return rlb->processSample(pre);
 }
 
 float LoudnessProcessor::computeGainDb(float measuredLoudnessDb, float targetLoudnessDb) const
@@ -184,27 +197,41 @@ void LoudnessProcessor::process(float *interleaved, int frameCount, int channelC
         return;
     }
 
+    if (m_momentaryRing.empty()) {
+        updateFilters();
+    }
+
     const float targetLoudnessDb = targetLoudnessDbForAmount(amount);
+    const std::size_t ringSize = m_momentaryRing.size();
 
     for (int frame = 0; frame < frameCount; ++frame) {
-        float sumSquares = 0.f;
+        float weightedPower = 0.f;
         for (int channel = 0; channel < channelCount; ++channel) {
-            const size_t index = static_cast<size_t>(frame * channelCount + channel);
+            const std::size_t index = static_cast<std::size_t>(frame * channelCount + channel);
             const float input = interleaved[index];
-            BiquadState *highPass = channel == 0 ? &m_highPassLeft : &m_highPassRight;
-            BiquadState *highShelf = channel == 0 ? &m_highShelfLeft : &m_highShelfRight;
+            BiquadState *preFilter = channel == 0 ? &m_preFilterLeft : &m_preFilterRight;
+            BiquadState *rlb = channel == 0 ? &m_rlbLeft : &m_rlbRight;
             if (channelCount == 1) {
-                highPass = &m_highPassLeft;
-                highShelf = &m_highShelfLeft;
+                preFilter = &m_preFilterLeft;
+                rlb = &m_rlbLeft;
             }
-            const float weighted = processKWeightedSample(input, highPass, highShelf);
-            sumSquares += weighted * weighted;
+            const float weighted = processKWeightedSample(input, preFilter, rlb);
+            weightedPower += weighted * weighted;
         }
 
-        const float instantMeanSquare = sumSquares / static_cast<float>(channelCount);
-        m_meanSquare = m_loudnessCoeff * m_meanSquare + (1.f - m_loudnessCoeff) * instantMeanSquare;
+        if (m_momentaryFilled == ringSize) {
+            m_momentarySum -= static_cast<double>(m_momentaryRing[m_momentaryIndex]);
+        } else {
+            ++m_momentaryFilled;
+        }
+        m_momentaryRing[m_momentaryIndex] = weightedPower;
+        m_momentarySum += static_cast<double>(weightedPower);
+        m_momentaryIndex = (m_momentaryIndex + 1) % ringSize;
 
-        const float measuredLoudnessDb = 10.f * std::log10(std::max(m_meanSquare, kMinMeanSquare));
+        const float meanWeightedPower =
+            static_cast<float>(m_momentarySum / static_cast<double>(std::max<std::size_t>(m_momentaryFilled, 1)));
+        const float measuredLoudnessDb =
+            kLufsOffsetDb + 10.f * std::log10(std::max(meanWeightedPower, kMinMeanSquare));
         const float targetGainDb = computeGainDb(measuredLoudnessDb, targetLoudnessDb);
 
         if (targetGainDb > m_currentGainDb) {
@@ -215,7 +242,7 @@ void LoudnessProcessor::process(float *interleaved, int frameCount, int channelC
 
         const float gain = std::pow(10.f, m_currentGainDb / 20.f);
         for (int channel = 0; channel < channelCount; ++channel) {
-            const size_t index = static_cast<size_t>(frame * channelCount + channel);
+            const std::size_t index = static_cast<std::size_t>(frame * channelCount + channel);
             interleaved[index] = softLimitSample(interleaved[index] * gain);
         }
     }

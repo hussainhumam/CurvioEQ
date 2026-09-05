@@ -1,7 +1,9 @@
 #include "audioengine.h"
 
 #include "audiothreadutils.h"
+#include "audiosessionvolume.h"
 #include "eqaudiosession.h"
+#include "vst3/vst3plugin.h"
 #include "log.h"
 #include "mixlimiter.h"
 #include "processloopbackcapture.h"
@@ -211,6 +213,7 @@ bool AudioEngine::startSession(unsigned long processId,
                                   [this, pid, errorMessage]() { handleSessionThreadEnded(pid, errorMessage); },
                                   Qt::QueuedConnection);
     };
+    session->setOutputLimiterThreshold(m_outputLimiterThreshold.load());
     if (!session->start(std::move(startConfig), &startError)) {
         if (errorMessage) {
             *errorMessage = startError;
@@ -245,6 +248,7 @@ bool AudioEngine::startSession(unsigned long processId,
         std::lock_guard<std::mutex> lock(m_sessionsMutex);
         m_sessionMuteRoutingSink.insert(processId, muteRoutingSink);
         m_sessionSinkDeviceIds.insert(processId, sinkDeviceId);
+        session->setOutputGain(m_sessionOutputGains.value(processId, 1.f));
         m_sessions.push_back(std::move(session));
     }
 
@@ -451,6 +455,42 @@ void AudioEngine::setSessionAudioChainOrder(unsigned long processId, const Audio
     for (auto &session : m_sessions) {
         if (session && session->processId() == processId) {
             session->setAudioChainOrder(order);
+            return;
+        }
+    }
+}
+
+void AudioEngine::setSessionOutputGain(unsigned long processId, float gain)
+{
+    const float clamped = std::clamp(gain, 1.f, AudioSessionVolume::kMaxOutputGain);
+    std::lock_guard<std::mutex> lock(m_sessionsMutex);
+    m_sessionOutputGains.insert(processId, clamped);
+    for (auto &session : m_sessions) {
+        if (session && session->processId() == processId) {
+            session->setOutputGain(clamped);
+            return;
+        }
+    }
+}
+
+void AudioEngine::setOutputLimiterThreshold(float linearPeak)
+{
+    const float clamped = std::clamp(linearPeak, MixLimiter::dbToLinear(AppConstants::kSpectrumLimiterMinDb), 1.f);
+    m_outputLimiterThreshold.store(clamped);
+    std::lock_guard<std::mutex> lock(m_sessionsMutex);
+    for (auto &session : m_sessions) {
+        if (session) {
+            session->setOutputLimiterThreshold(clamped);
+        }
+    }
+}
+
+void AudioEngine::setSessionAddon(unsigned long processId, int slot, std::shared_ptr<Vst3Plugin> plugin)
+{
+    std::lock_guard<std::mutex> lock(m_sessionsMutex);
+    for (auto &session : m_sessions) {
+        if (session && session->processId() == processId) {
+            session->setAddon(slot, std::move(plugin));
             return;
         }
     }

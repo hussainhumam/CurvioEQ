@@ -2,6 +2,7 @@
 
 #include <array>
 #include <QString>
+#include <QStringList>
 
 #include "ui/eqcolorpalette.h"
 #include "audio/audiochainorder.h"
@@ -27,6 +28,7 @@ struct AppSettings {
     int dynamicsLoudnessAmount = 0;
     AudioChainOrder audioChainOrder{};
     bool spectrumEnabled = true;
+    float spectrumLimiterDb = 0.f;
     bool eqUiModeAdvanced = false;
     bool keybindsEnabled = false;
     QString eqToggleKeybind;
@@ -34,6 +36,7 @@ struct AppSettings {
     std::array<QString, kEqColorKeybindCount> eqColorKeybinds{};
     std::array<int, kSurroundChannelCount> surroundChannelLevels = defaultVirtualSurroundChannelLevels();
     QString lastShownChangelogVersion;
+    QStringList vst3ExtraFolders;
 };
 
 class SettingsStore

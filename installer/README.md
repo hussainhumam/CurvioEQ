@@ -26,6 +26,14 @@ Or manually:
 
 Output: `dist/CurvioEQ-Setup.exe`
 
+## Portable zip
+
+```bat
+build_portable.bat
+```
+
+Output: `dist/CurvioEQ-1.3.1-portable.zip`. Includes `portable.txt` so settings stay in the unzipped folder.
+
 ## 3. After install
 
 Launch CurvioEQ from the Start Menu. Install a virtual audio device (for example VB-Cable or Voicemeeter), then choose routing sink and EQ output under **Settings**.

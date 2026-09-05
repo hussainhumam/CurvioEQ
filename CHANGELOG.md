@@ -2,6 +2,42 @@
 
 All notable changes to CurvioEQ are documented here.
 
+## [1.3.1] - 2026-09-05
+
+Patch on 1.3.0: **Add-ons** (VST3), a spectrum **ceiling limiter**, clip frequency finder, and a **portable** zip.
+
+### Add-ons
+
+VST3 plugins as per-app inserts (up to 4). Menu **Add-ons** — same dropdown style as Settings / Edit.
+
+- Select a running app, then **Add** from installed VST3 plugins
+- **Configure** opens the plugin editor; **Delete** removes it
+- New add-ons append at the end of that app’s chain; reorder them with EQ / surround / dynamics / loudness in **Audio chain**
+- Scans `C:\Program Files\Common Files\VST3` plus extra folders in Settings
+- Saved per app exe in `addons.json`
+- Audio only while EQ is on. A crashing plugin can take CurvioEQ down.
+
+### Spectrum ceiling limiter
+
+The spectrum is also a limiter: drag the ceiling label (or the dashed line). Only frequency bands that poke through the line are limited; quieter bands stay as they are. 0 dB bypasses. Mix-bus clip safety is unchanged. The ceiling is saved in settings.
+
+### Clip frequency finder
+
+Right-click a running app → **Record clip** / **Stop and analyze**. Logs the main frequencies in that app’s audio (about 15 s cap).
+
+### Portable build
+
+GitHub Releases now include `CurvioEQ-1.3.1-portable.zip` next to the installer.
+
+- Unzip and run `bin\CurvioEQ.exe`
+- `portable.txt` in the unzipped folder keeps settings, add-ons, and sound mods **in that folder** instead of `%AppData%\CurvioEQ`
+- The installed copy still uses AppData
+
+### Also in 1.3.1
+
+- App volume slider can go to **150%** (boost on the EQ output above 100%)
+- Right-scale on the spectrum (0 to −48); grab cursor on the ceiling label
+
 ## [1.3.0] - 2026-09-03
 
 CurvioEQ 1.3.0 is a big quality-of-life and mixing release on top of 1.2.1. There is a new **Edit** menu with EQ Undo / Redo. Advanced EQ is faster to edit. Presets can store more than EQ. HRTF, Dynamics, and processing order can follow the app you have selected. The main window, keybinds, online headphone lists, and updates are cleaned up. Built-in tone curves are unchanged.

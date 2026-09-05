@@ -2,12 +2,15 @@
 
 #include "appconstants.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
 
 namespace {
+constexpr char kPortableMarker[] = "portable.txt";
+
 QString roamingAppData()
 {
     QString roaming = QString::fromLocal8Bit(qgetenv("APPDATA"));
@@ -24,10 +27,40 @@ QString settingsFileIn(const QString &root)
 {
     return QDir(root).filePath(QStringLiteral("settings.json"));
 }
+
+QString detectPortableRoot()
+{
+    const QString exeDir = QCoreApplication::applicationDirPath();
+    if (exeDir.isEmpty()) {
+        return {};
+    }
+
+    if (QFile::exists(QDir(exeDir).filePath(QString::fromLatin1(kPortableMarker)))) {
+        return QDir(exeDir).absolutePath();
+    }
+
+    QDir dir(exeDir);
+    if (dir.dirName().compare(QStringLiteral("bin"), Qt::CaseInsensitive) == 0 && dir.cdUp()) {
+        if (QFile::exists(dir.filePath(QString::fromLatin1(kPortableMarker)))) {
+            return dir.absolutePath();
+        }
+    }
+    return {};
+}
+}
+
+bool AppPaths::isPortable()
+{
+    return !detectPortableRoot().isEmpty();
 }
 
 QStringList AppPaths::settingsSearchRoots()
 {
+    const QString portableRoot = detectPortableRoot();
+    if (!portableRoot.isEmpty()) {
+        return {portableRoot};
+    }
+
     const QString roaming = roamingAppData();
     const QString appId = QString::fromLatin1(AppConstants::kAppId);
     return {
@@ -69,8 +102,7 @@ bool AppPaths::hasExistingSettingsFile()
 
 static QString welcomeMarkerPath()
 {
-    return QDir(roamingAppData()).filePath(
-        QString::fromLatin1(AppConstants::kAppId) + QStringLiteral("/welcome.shown"));
+    return QDir(AppPaths::dataRoot()).filePath(QStringLiteral("welcome.shown"));
 }
 
 bool AppPaths::welcomeMarkerExists()

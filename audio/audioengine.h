@@ -18,6 +18,7 @@
 #include <thread>
 
 class EqAudioSession;
+class Vst3Plugin;
 class WasapiRenderer;
 class SpectrumCapture;
 
@@ -57,6 +58,9 @@ public:
     void setSessionVirtualSurround(unsigned long processId, const VirtualSurroundSettings &settings);
     void setSessionDynamicRange(unsigned long processId, const DynamicRangeSettings &settings);
     void setSessionAudioChainOrder(unsigned long processId, const AudioChainOrder &order);
+    void setSessionOutputGain(unsigned long processId, float gain);
+    void setOutputLimiterThreshold(float linearPeak);
+    void setSessionAddon(unsigned long processId, int slot, std::shared_ptr<Vst3Plugin> plugin);
 
 signals:
     void statusChanged(const QString &message);
@@ -73,6 +77,7 @@ private:
 
     SpectrumCapture *m_spectrumCapture = nullptr;
     std::atomic<unsigned long> m_spectrumProcessId{0};
+    std::atomic<float> m_outputLimiterThreshold{1.f};
 
     std::unique_ptr<WasapiRenderer> m_renderer;
     QString m_eqOutputDeviceId;
@@ -81,6 +86,7 @@ private:
     std::vector<std::unique_ptr<EqAudioSession>> m_sessions;
     QHash<unsigned long, bool> m_sessionMuteRoutingSink;
     QHash<unsigned long, QString> m_sessionSinkDeviceIds;
+    QHash<unsigned long, float> m_sessionOutputGains;
 
     std::atomic<bool> m_mixerRunning{false};
     std::atomic<bool> m_mixerStopRequested{false};

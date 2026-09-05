@@ -1,5 +1,5 @@
 #define MyAppName "CurvioEQ"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.3.1"
 #define MyAppPublisher "Hussein"
 #define MyAppExeName "bin\CurvioEQ.exe"
 #define DeployDir "..\dist"
@@ -37,7 +37,7 @@ Name: "app"; Description: "CurvioEQ application"; Types: full custom; Flags: fix
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Components: app
 
 [Files]
-Source: "{#DeployDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "CurvioEQ-Setup.exe,PerAppEQ-Setup.exe"; Components: app
+Source: "{#DeployDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "CurvioEQ-Setup.exe,PerAppEQ-Setup.exe,*.zip,portable-stage"; Components: app
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Components: app

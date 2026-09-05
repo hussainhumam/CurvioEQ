@@ -16,7 +16,10 @@ Captures audio from a running application via process loopback, applies a 10-ban
 
 ## Download
 
-**Windows 10+** — get the latest installer from [GitHub Releases](https://github.com/hussainhumam/CurvioEQ/releases/latest).
+**Windows 10+** — get the latest build from [GitHub Releases](https://github.com/hussainhumam/CurvioEQ/releases/latest):
+
+- **Installer** — `CurvioEQ-Setup.exe`
+- **Portable** — `CurvioEQ-*-portable.zip` (unzip and run `bin\CurvioEQ.exe`; settings stay in that folder)
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.
 
@@ -32,7 +35,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 - **Global keybinds** — disable all EQ, mute output device, or mute apps by color label (Settings → Keybinds)
 - **System tray** — per-app Enable/Disable EQ rows, show window, quit; optional autostart
 - Restore EQ routing when a target app exits and is re-enabled
-- Single-instance app with settings persisted under `%AppData%/CurvioEQ/`
+- Single-instance app; installed copy stores settings under `%AppData%/CurvioEQ/`. Portable zip keeps settings next to the app.
 
 ## How it works
 
@@ -114,11 +117,19 @@ build_installer.bat
 
 Output: `dist/CurvioEQ-Setup.exe` (includes app, Qt runtime, and optional desktop shortcut).
 
+Portable zip (no install):
+
+```bat
+build_portable.bat
+```
+
+Output: `dist/CurvioEQ-1.3.1-portable.zip`.
+
 See [`installer/README.md`](installer/README.md) for details.
 
 ## Settings file
 
-Settings are stored at `%AppData%/CurvioEQ/settings.json` (version 6). Key fields:
+Settings are stored at `%AppData%/CurvioEQ/settings.json` for the installer build. The portable zip uses `settings.json` in the unzipped folder (`portable.txt` present). Key fields:
 
 - `setupCompleted` — first-run wizard completed
 - `eqOutputDeviceId` / `eqOutputDeviceName` — where EQ audio plays

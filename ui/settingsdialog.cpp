@@ -6,8 +6,12 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFileDialog>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QListWidget>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
@@ -37,6 +41,32 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
         this);
     m_startWithWindowsCheck->setChecked(current.startWithWindows);
     form->addRow(m_startWithWindowsCheck);
+
+    m_vst3FolderList = new QListWidget(this);
+    m_vst3FolderList->setMinimumHeight(70);
+    for (const QString &folder : current.vst3ExtraFolders) {
+        m_vst3FolderList->addItem(folder);
+    }
+    auto *folderButtons = new QHBoxLayout();
+    auto *addFolder = new QPushButton(QStringLiteral("Add folder"), this);
+    auto *removeFolder = new QPushButton(QStringLiteral("Remove"), this);
+    folderButtons->addWidget(addFolder);
+    folderButtons->addWidget(removeFolder);
+    folderButtons->addStretch();
+    connect(addFolder, &QPushButton::clicked, this, [this]() {
+        const QString folder = QFileDialog::getExistingDirectory(this, QStringLiteral("VST3 folder"));
+        if (!folder.isEmpty() && m_vst3FolderList) {
+            m_vst3FolderList->addItem(folder);
+        }
+    });
+    connect(removeFolder, &QPushButton::clicked, this, [this]() {
+        if (!m_vst3FolderList) {
+            return;
+        }
+        qDeleteAll(m_vst3FolderList->selectedItems());
+    });
+    form->addRow(QStringLiteral("Extra VST3 folders:"), m_vst3FolderList);
+    form->addRow(QString(), folderButtons);
 
     layout->addLayout(form);
 
@@ -125,6 +155,16 @@ void SettingsDialog::accept()
     if (outputIndex >= 0 && outputIndex < m_eqOutputDevices.size()) {
         m_result.eqOutputDeviceId = m_eqOutputDevices.at(outputIndex).id;
         m_result.eqOutputDeviceName = m_eqOutputDevices.at(outputIndex).friendlyName;
+    }
+
+    m_result.vst3ExtraFolders.clear();
+    if (m_vst3FolderList) {
+        for (int i = 0; i < m_vst3FolderList->count(); ++i) {
+            const QString folder = m_vst3FolderList->item(i)->text().trimmed();
+            if (!folder.isEmpty()) {
+                m_result.vst3ExtraFolders.append(folder);
+            }
+        }
     }
 
     QDialog::accept();

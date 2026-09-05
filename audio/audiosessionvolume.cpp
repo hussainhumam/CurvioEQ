@@ -5,14 +5,18 @@
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
 
+#include <algorithm>
+#include <vector>
+
 #include <QString>
 
 namespace {
 
-ISimpleAudioVolume *findSimpleVolumeForProcess(unsigned long processId)
+std::vector<ISimpleAudioVolume *> collectSimpleVolumesForProcess(unsigned long processId)
 {
+    std::vector<ISimpleAudioVolume *> volumes;
     if (processId == 0) {
-        return nullptr;
+        return volumes;
     }
 
     IMMDeviceEnumerator *deviceEnumerator = nullptr;
@@ -22,20 +26,18 @@ ISimpleAudioVolume *findSimpleVolumeForProcess(unsigned long processId)
                                   __uuidof(IMMDeviceEnumerator),
                                   reinterpret_cast<void **>(&deviceEnumerator));
     if (FAILED(hr) || !deviceEnumerator) {
-        return nullptr;
+        return volumes;
     }
 
     IMMDeviceCollection *collection = nullptr;
     hr = deviceEnumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection);
     deviceEnumerator->Release();
     if (FAILED(hr) || !collection) {
-        return nullptr;
+        return volumes;
     }
 
     UINT deviceCount = 0;
     collection->GetCount(&deviceCount);
-
-    ISimpleAudioVolume *foundVolume = nullptr;
 
     for (UINT deviceIndex = 0; deviceIndex < deviceCount; ++deviceIndex) {
         IMMDevice *device = nullptr;
@@ -79,34 +81,40 @@ ISimpleAudioVolume *findSimpleVolumeForProcess(unsigned long processId)
             DWORD sessionProcessId = 0;
             if (SUCCEEDED(sessionControl2->GetProcessId(&sessionProcessId))
                 && sessionProcessId == processId) {
+                ISimpleAudioVolume *volume = nullptr;
                 hr = sessionControl2->QueryInterface(__uuidof(ISimpleAudioVolume),
-                                                       reinterpret_cast<void **>(&foundVolume));
+                                                     reinterpret_cast<void **>(&volume));
+                if (SUCCEEDED(hr) && volume) {
+                    volumes.push_back(volume);
+                }
             }
 
             sessionControl2->Release();
-            if (foundVolume) {
-                break;
-            }
         }
 
         sessionEnumerator->Release();
         sessionManager->Release();
-
-        if (foundVolume) {
-            break;
-        }
     }
 
     collection->Release();
-    return foundVolume;
+    return volumes;
+}
+
+void releaseVolumes(const std::vector<ISimpleAudioVolume *> &volumes)
+{
+    for (ISimpleAudioVolume *volume : volumes) {
+        if (volume) {
+            volume->Release();
+        }
+    }
 }
 
 } // namespace
 
 bool AudioSessionVolume::toggleMute(unsigned long processId, QString *errorMessage)
 {
-    ISimpleAudioVolume *volume = findSimpleVolumeForProcess(processId);
-    if (!volume) {
+    const std::vector<ISimpleAudioVolume *> volumes = collectSimpleVolumesForProcess(processId);
+    if (volumes.empty()) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("No active audio session found for that app");
         }
@@ -114,20 +122,94 @@ bool AudioSessionVolume::toggleMute(unsigned long processId, QString *errorMessa
     }
 
     BOOL muted = FALSE;
-    HRESULT hr = volume->GetMute(&muted);
+    HRESULT hr = volumes.front()->GetMute(&muted);
     if (FAILED(hr)) {
-        volume->Release();
+        releaseVolumes(volumes);
         if (errorMessage) {
             *errorMessage = QStringLiteral("Failed to read app mute state");
         }
         return false;
     }
 
-    hr = volume->SetMute(muted ? FALSE : TRUE, nullptr);
-    volume->Release();
-    if (FAILED(hr)) {
+    bool anySucceeded = false;
+    for (ISimpleAudioVolume *volume : volumes) {
+        hr = volume->SetMute(muted ? FALSE : TRUE, nullptr);
+        if (SUCCEEDED(hr)) {
+            anySucceeded = true;
+        }
+    }
+    releaseVolumes(volumes);
+
+    if (!anySucceeded) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("Failed to toggle app mute state");
+        }
+        return false;
+    }
+    return true;
+}
+
+bool AudioSessionVolume::getMasterVolume(unsigned long processId, float *level01, QString *errorMessage)
+{
+    if (!level01) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Invalid volume output");
+        }
+        return false;
+    }
+
+    const std::vector<ISimpleAudioVolume *> volumes = collectSimpleVolumesForProcess(processId);
+    if (volumes.empty()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("No active audio session found for that app");
+        }
+        return false;
+    }
+
+    bool anySucceeded = false;
+    for (ISimpleAudioVolume *volume : volumes) {
+        float level = 1.f;
+        const HRESULT hr = volume->GetMasterVolume(&level);
+        if (SUCCEEDED(hr)) {
+            *level01 = std::clamp(level, 0.f, 1.f);
+            anySucceeded = true;
+            break;
+        }
+    }
+    releaseVolumes(volumes);
+
+    if (!anySucceeded) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Failed to read app volume");
+        }
+        return false;
+    }
+    return true;
+}
+
+bool AudioSessionVolume::setMasterVolume(unsigned long processId, float level01, QString *errorMessage)
+{
+    const float clamped = std::clamp(level01, 0.f, 1.f);
+    const std::vector<ISimpleAudioVolume *> volumes = collectSimpleVolumesForProcess(processId);
+    if (volumes.empty()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("No active audio session found for that app");
+        }
+        return false;
+    }
+
+    bool anySucceeded = false;
+    for (ISimpleAudioVolume *volume : volumes) {
+        const HRESULT hr = volume->SetMasterVolume(clamped, nullptr);
+        if (SUCCEEDED(hr)) {
+            anySucceeded = true;
+        }
+    }
+    releaseVolumes(volumes);
+
+    if (!anySucceeded) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Failed to set app volume");
         }
         return false;
     }

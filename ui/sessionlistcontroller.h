@@ -40,6 +40,7 @@ public:
     unsigned long selectedProcessId() const;
     QString displayNameForPid(unsigned long pid) const;
     int appCount() const;
+    void setClipRecording(unsigned long processId, const QString &displayName);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -52,6 +53,9 @@ signals:
     void enableEqRequested(unsigned long processId);
     void disableEqRequested(unsigned long processId);
     void soundModsRequested(unsigned long processId);
+    void recordClipRequested(unsigned long processId);
+    void stopClipAnalyzeRequested();
+    void appVolumeChanged(unsigned long processId, int percent);
 
 private slots:
     void onTimer();
@@ -72,4 +76,7 @@ private:
     QTimer *m_timer = nullptr;
     QElapsedTimer m_lastPress;
     QHash<unsigned long, QColor> m_eqSessions;
+    QHash<unsigned long, int> m_boostPercent;
+    unsigned long m_clipRecordingPid = 0;
+    QString m_clipRecordingName;
 };

@@ -298,9 +298,3 @@ add_test(NAME DspVerify COMMAND CurvioEQ_DspVerify)
 install(TARGETS CurvioEQ_DspVerify
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-
-if(EXISTS "${CMAKE_BINARY_DIR}/compile_commands.json")
-    configure_file("${CMAKE_BINARY_DIR}/compile_commands.json"
-                   "${CMAKE_SOURCE_DIR}/compile_commands.json"
-                   COPYONLY)
-endif()

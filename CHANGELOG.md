@@ -2,6 +2,91 @@
 
 All notable changes to CurvioEQ are documented here.
 
+## [1.3.2] - 2026-09-26
+
+Patch on 1.3.1: rewritten audio engine path, full Settings I/O panel, **Start at app startup**, limiter badge on the ceiling line.
+
+Routing is unchanged: app → routing sink, process loopback → EQ → output device.
+
+### Engine — `EngineIoSettings`
+
+New `audio/engineiosettings.h`. One struct is copied into `AudioEngine`, `EqAudioSession`, `WasapiRenderer::open`, and `ProcessLoopbackCapture`.
+
+Enums: `ProcessingPrecision` (Float32 / Float64), `ResampleQuality` (Fast / Balanced / Maximum), `ChannelLayout` (Auto / Stereo / 5.1 / 7.1), `OutputFormat` (Auto / Float32 / PCM16), `ThreadPriority` (RealtimeAudio / Normal), `ShareMode` (PreferShared / Exclusive), `BufferSizePreset` (Low=16 / Balanced=64 / Safe=512 / Custom).
+
+Helpers: `requestedBufferFrames()`, `safetyExtraFrames()`, `mixChannelCountForDevice()`, `affinityCoreOrNone()`, `useDoublePrecision()`, `useRealtimeAudio()`, `preferExclusive()`.
+
+`AudioEngine::setEngineSettings` stores the block; `MainWindow::applySettings` compares previous vs next `engineIo()` and calls `EqSessionManager::restartActiveSessions()` when I/O changed.
+
+### Engine — WASAPI (`wasapirenderer`, `wasapilowlatency.h`, `wasapierror.h`)
+
+- `WasapiRenderer::open(deviceId, EngineIoSettings, error)` instead of a device-id-only open
+- Shared: `IAudioClient3::GetSharedModeEnginePeriod` + `InitializeSharedAudioStream` via `initializeSharedSnappedPeriod` / `snapEnginePeriod` (period clamped to min/max and snapped to `fundamentalPeriod`)
+- If Client3 is missing or init fails: classic `IAudioClient::Initialize` with `AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUTOCONVERTPCM`
+- Exclusive: event-callback init first, then non-event Initialize, then **Shared fallback** with a reduced `EngineIoSettings`
+- Output format: Mix format vs requested Float32 / PCM16; failed `IsFormatSupported` / Initialize falls back
+- `preferredFrameCount()` is the **engine period**; `bufferFrameCount()` / `prerollFrameCount()` / `lastPaddingFrames()` / `lastWaitTimedOut()` / `deviceLost()` / `generation()` / `readClock()` feed mix and clock sync
+- Upmix/downmix uses `mixChannelCountForDevice` vs device channel count
+- Capture: loopback client takes the same I/O settings; period/chunk from `AppConstants::captureChunkFramesForPeriod` / `effectiveRingFrames`
+
+### Engine — mix, clock, threads
+
+- `audio/audioclock.h` — QPC + device position
+- `ClockSync`: `observeCapture` / `observeRender`; PLL `rateRatio` only if `driftCorrection`; otherwise `rateRatio == 1`. `trimmedWriteFrames` drops up to 1/8 of a write when fill is above `highFillFrames`
+- Ring target / high fill: `ringTargetFillFramesForPeriod` / `ringHighFillFramesForPeriod` from requested buffer **and** actual period (not a fixed 512-frame world)
+- `requestedEnginePeriodFrames`: for buffers ≥ 16, period request is `max(buffer/4, 16)`
+- Mix loop: wait on render event; mix `periodFrames`; catch-up capped at `periodFrames * 3`; `m_mixerRingUnderruns` / wait-timeout / padding-full logged
+- `AudioThreadUtils`: `_MM_FLUSH_ZERO` + `_MM_DENORMALS_ZERO`; `AvSetMmThreadCharacteristicsW(L"Pro Audio")` when realtime; `SetThreadAffinityMask` when affinity is not Auto
+- `AudioEngine::rebuildAfterInvalidation` / `deviceInvalidated` honor `autoRecovery`
+
+### Engine — DSP precision and session
+
+- `EqAudioSession` holds `EngineIoSettings m_ioSettings`
+- `EqProcessor` / `DynamicsProcessor` / `LoudnessProcessor` / `SpectrumCeilingLimiter` / `MixLimiter`: `setUseDoublePrecision` (64-bit accumulators on the session/mix path). WASAPI, VST, HRTF stay float32
+- `Resampler` quality enum wired from `ResampleQuality`
+- `EqAudioSession::logMeasuredLatency`: period + ringFill + preroll + HRTF IR + limiter OLA (`kHop` if ceiling engaged) + VST `latencySamples()`
+- `setSessionBalance(pid, balance)` live path for the new L/R control (`EqState::balance`, `kMinBalance`−`kMaxBalance`)
+
+New/split headers: `engineiosettings.h`, `audioclock.h`, `wasapilowlatency.h`, `wasapierror.h`.
+
+### Settings — persist and UI
+
+`AppSettings` gains: `sampleRate`, `bufferFrames`, `processingPrecision`, `resampleQuality`, `channelLayout`, `outputFormat`, `driftCorrection` (default **false**), `safetyBufferAuto`, `safetyBufferFrames`, `threadPriority`, `cpuAffinityAuto`, `cpuAffinityCore`, `shareMode`, `autoRecovery`.
+
+JSON keys include `bufferPreset` (low/balanced/safe/custom) plus the enum strings (`float32`/`float64`, `fast`/`balanced`/`maximum`, `stereo`/`surround51`/`surround71`, `pcm16`, `realtime`/`normal`, `shared`/`exclusive`).
+
+`SettingsDialog`: combo + spin rows for rate/buffer/safety/affinity; `populateAudioIoControls` / `engineSettingsFromControls` / `setAudioIoDefaults`. `AppConstants` clamps: rate 8000–384000, buffer 1–65536, listed rates `{44100,48000,96000,192000}`.
+
+### Start at app startup — implementation
+
+- `StartupPresetStore` (`startuppresets.json`): `{ "bindings": [ { "exe", "presetId" } ] }`. Key = `AppIconProvider::normalizeExePath` (absolute, native separators, lower-case). Same helper as `Vst3AddonStore`
+- `PresetPanelController`: `m_cleanPresetId` / `m_dirty`; `markDirty` / `markClean` / `ensureNamedPreset` (save dialog if dirty or no named preset)
+- `SessionListController`: checkable **Start at app startup**; `startupPresetToggled(pid, enable)`; `setStartupPresetBoundQuery`; `processIds()`
+- `MainWindow::bindStartupPresetForExe` / `enableEqWithPreset` / `applyStartupPresetsToVisibleSessions` (`m_startupApplyAttempted` so a failed enable is not retried every 500 ms for the same PID)
+- `EqSessionManager::enableForProcess(pid, EqSessionStartSettings)` + `startPreparedSession` — all four sections from the preset; missing `has*` flags filled from current UI. No-arg `enableForProcess` unchanged (EQ draft + UI surround/dynamics/chain)
+- `ExplorerStartupVerb::registerVerb`: HKCU `exefile\shell\CurvioEQ.StartAtAppStartup`, command `"CurvioEQ.exe" --start-at-app-startup "%1"`, `SHChangeNotify`. Inno `uninsdeletekey` on that key
+- `SingleInstanceServer`: payload `show` vs `SAS|<utf8 path>`; `startAtAppStartupRequested`
+- `main.cpp`: parse `--start-at-app-startup`, forward to existing instance or `QTimer::singleShot` → `handleStartAtAppStartup`
+
+### Spectrum limiter UI — implementation
+
+- `handleCalloutPath`: one `QPainterPath`; tip at `dbToY(m_ceilingDb)` clamped to body; only **right** corners `quadTo` radius
+- `layoutHandle` / `handleRect`: `y = ceilingY - height/2`; clamp to widget ± `kHandleWidgetOverflow` (6), not `plot.top/bottom`
+- Plot margins `kPlotTopMargin` 12 / `kPlotBottomMargin` 16 so 0 dB / −48 dB can sit on the line
+- DSP class still `SpectrumCeilingLimiter` on `EqAudioSession`; UI still `MixLimiter::dbToLinear` for the dB→linear convert only
+
+### Smaller UI / fixes — technical
+
+- `EqState::balance`; slider under bands; `EqSessionManager::applyLiveBalance`
+- Session-list context menu: extra `addSeparator()` calls removed
+- Startup enable no longer always overwrote surround/dynamics/chain from global UI (`enableForProcess` surround readers)
+- Second-instance Explorer bind no longer only sent `"show"`
+- Mix catch-up `min(available, period*3)`; underrun atomics
+- Shared `normalizeExePath`; unused includes (`QScrollBar`, `QCursor` on plot, unused `log.h` on session manager)
+- clangd: `CMAKE_EXPORT_COMPILE_COMMANDS`, `.clangd` compilation database (so Qt headers resolve)
+
+Routing sink and EQ output must still differ. Multi-process apps still EQ from the main process (full process tree). Built-in tone curves are unchanged.
+
 ## [1.3.1] - 2026-09-05
 
 Patch on 1.3.0: **Add-ons** (VST3), a spectrum **ceiling limiter**, clip frequency finder, and a **portable** zip.

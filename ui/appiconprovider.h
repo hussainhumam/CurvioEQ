@@ -11,6 +11,7 @@ public:
     static QIcon iconForProcess(unsigned long processId);
     static QString displayNameForProcess(unsigned long processId);
     static QString executablePathForProcess(unsigned long processId);
+    static QString normalizeExePath(const QString &exePath);
 
 private:
 

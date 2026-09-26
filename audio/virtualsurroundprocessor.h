@@ -6,6 +6,7 @@
 
 #include <array>
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 class VirtualSurroundProcessor
@@ -46,6 +47,7 @@ private:
     static float strengthToMix(int strength);
     void configureCrossoverFilters();
     void ensureConfigured();
+    void prepareScratch(int maxFrames);
     void upmixFrame(float left, float right, std::array<float, kSpeakerCount> *speakers);
     void normalizeAndLimitWet(int frameCount);
     static void configureHighPass(BiquadState *filter, float sampleRate, float cutoffHz);
@@ -59,6 +61,8 @@ private:
     bool m_configured = false;
     int m_activePresetId = -1;
     float m_activeSampleRate = 0.f;
+    int m_maxScratchFrames = 0;
+    std::mutex m_configMutex;
 
     BiquadState m_spatialHighPassLeft;
     BiquadState m_spatialHighPassRight;
@@ -68,4 +72,7 @@ private:
     BiquadState m_wetHighPassRight2;
     std::array<HrtfConvolver, kSpeakerCount> m_convolvers{};
     std::vector<float> m_wetScratch;
+    std::array<std::vector<float>, kSpeakerCount> m_speakerBuffers{};
+    std::vector<float> m_highLeft;
+    std::vector<float> m_highRight;
 };

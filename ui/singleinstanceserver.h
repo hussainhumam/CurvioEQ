@@ -1,6 +1,8 @@
 #pragma once
 
+#include <QByteArray>
 #include <QObject>
+#include <QString>
 
 class QLocalServer;
 
@@ -11,11 +13,12 @@ class SingleInstanceServer : public QObject
 public:
     explicit SingleInstanceServer(QObject *parent = nullptr);
 
-    static bool notifyExistingInstance();
+    static bool notifyExistingInstance(const QByteArray &payload = QByteArrayLiteral("show"));
     void listen();
 
 signals:
     void showRequested();
+    void startAtAppStartupRequested(const QString &exePath);
     void listenFailed(const QString &errorMessage);
 
 private:

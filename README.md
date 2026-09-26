@@ -34,6 +34,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 - Real-time spectrum analyzer
 - **Global keybinds** — disable all EQ, mute output device, or mute apps by color label (Settings → Keybinds)
 - **System tray** — per-app Enable/Disable EQ rows, show window, quit; optional autostart
+- **Start at app startup** — bind a saved preset to an app (running-apps menu or Explorer right-click on the `.exe`); CurvioEQ enables EQ with that preset when the app plays audio
 - Restore EQ routing when a target app exits and is re-enabled
 - Single-instance app; installed copy stores settings under `%AppData%/CurvioEQ/`. Portable zip keeps settings next to the app.
 
@@ -123,7 +124,7 @@ Portable zip (no install):
 build_portable.bat
 ```
 
-Output: `dist/CurvioEQ-1.3.1-portable.zip`.
+Output: `dist/CurvioEQ-1.3.2-portable.zip`.
 
 See [`installer/README.md`](installer/README.md) for details.
 
@@ -135,3 +136,21 @@ Settings are stored at `%AppData%/CurvioEQ/settings.json` for the installer buil
 - `eqOutputDeviceId` / `eqOutputDeviceName` — where EQ audio plays
 - `routingSinkDeviceId` / `routingSinkDeviceName` — virtual routing sink
 - `muteRoutingSink` — mute the routing sink while EQ is active
+
+See [ui/settings.md](ui/settings.md) for the full file list and fields.
+
+## Developer docs
+
+Feature notes live next to the code:
+
+- [Start at app startup](ui/startuppresets.md)
+- [Presets](ui/presets.md)
+- [EQ sessions](ui/eqsessions.md)
+- [Running-apps list](ui/sessionlist.md)
+- [Spectrum / limiter UI](ui/spectrum.md)
+- [Session output ceiling DSP](audio/spectrumceilinglimiter.md)
+- [Routing and capture](audio/routing.md)
+- [Tray](ui/tray.md)
+- [VST3 add-ons](vst3/addons.md)
+- [Settings and data root](ui/settings.md)
+

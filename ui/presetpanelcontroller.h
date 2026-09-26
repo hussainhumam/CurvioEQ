@@ -42,6 +42,9 @@ public:
 
     void refreshList();
     void applyPresetToUi(const EqPreset &preset);
+    void markDirty();
+    void markClean(const QString &presetId);
+    bool ensureNamedPreset(EqPreset *outPreset);
 
     static constexpr int RoleFavorite = Qt::UserRole + 1;
 
@@ -66,6 +69,10 @@ private:
     void selectPresetById(const QString &presetId);
     void addPresetItem(const EqPreset &preset);
     void onToggleFavorite(const QString &presetId);
+    bool saveCurrentPresetInteractive(EqPreset *createdPreset);
+
+    QString m_cleanPresetId;
+    bool m_dirty = true;
 
     QListWidget *m_listWidget = nullptr;
     QPushButton *m_saveButton = nullptr;

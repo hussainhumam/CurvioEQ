@@ -86,10 +86,20 @@ float LoudnessProcessor::BiquadState::processSample(float input)
     return output;
 }
 
+double LoudnessProcessor::BiquadState::processSampleD(double input)
+{
+    const double output = static_cast<double>(b0) * input + dz1;
+    dz1 = static_cast<double>(b1) * input - static_cast<double>(a1) * output + dz2;
+    dz2 = static_cast<double>(b2) * input - static_cast<double>(a2) * output;
+    return output;
+}
+
 void LoudnessProcessor::BiquadState::reset()
 {
     z1 = 0.f;
     z2 = 0.f;
+    dz1 = 0.0;
+    dz2 = 0.0;
 }
 
 LoudnessProcessor::LoudnessProcessor()
@@ -106,6 +116,12 @@ void LoudnessProcessor::setEnabled(bool enabled)
 void LoudnessProcessor::setAmount(int amount)
 {
     m_amount.store(clampLoudnessAmount(amount));
+}
+
+void LoudnessProcessor::setUseDoublePrecision(bool enabled)
+{
+    m_useDouble.store(enabled, std::memory_order_release);
+    reset();
 }
 
 void LoudnessProcessor::setSampleRate(float sampleRate)
@@ -203,20 +219,27 @@ void LoudnessProcessor::process(float *interleaved, int frameCount, int channelC
 
     const float targetLoudnessDb = targetLoudnessDbForAmount(amount);
     const std::size_t ringSize = m_momentaryRing.size();
+    const bool useDouble = m_useDouble.load(std::memory_order_acquire);
 
     for (int frame = 0; frame < frameCount; ++frame) {
-        float weightedPower = 0.f;
+        double weightedPower = 0.0;
         for (int channel = 0; channel < channelCount; ++channel) {
             const std::size_t index = static_cast<std::size_t>(frame * channelCount + channel);
-            const float input = interleaved[index];
             BiquadState *preFilter = channel == 0 ? &m_preFilterLeft : &m_preFilterRight;
             BiquadState *rlb = channel == 0 ? &m_rlbLeft : &m_rlbRight;
             if (channelCount == 1) {
                 preFilter = &m_preFilterLeft;
                 rlb = &m_rlbLeft;
             }
-            const float weighted = processKWeightedSample(input, preFilter, rlb);
-            weightedPower += weighted * weighted;
+            if (useDouble) {
+                const double input = static_cast<double>(interleaved[index]);
+                const double weighted = rlb->processSampleD(preFilter->processSampleD(input));
+                weightedPower += weighted * weighted;
+            } else {
+                const float input = interleaved[index];
+                const float weighted = processKWeightedSample(input, preFilter, rlb);
+                weightedPower += static_cast<double>(weighted) * static_cast<double>(weighted);
+            }
         }
 
         if (m_momentaryFilled == ringSize) {
@@ -224,8 +247,8 @@ void LoudnessProcessor::process(float *interleaved, int frameCount, int channelC
         } else {
             ++m_momentaryFilled;
         }
-        m_momentaryRing[m_momentaryIndex] = weightedPower;
-        m_momentarySum += static_cast<double>(weightedPower);
+        m_momentaryRing[m_momentaryIndex] = static_cast<float>(weightedPower);
+        m_momentarySum += weightedPower;
         m_momentaryIndex = (m_momentaryIndex + 1) % ringSize;
 
         const float meanWeightedPower =

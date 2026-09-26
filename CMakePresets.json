@@ -13,6 +13,7 @@
             "binaryDir": "${sourceDir}/build/release",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "CMAKE_PREFIX_PATH": "C:/Qt/6.11.1/msvc2022_64",
                 "CMAKE_MT": "${sourceDir}/tools/mt_ok.bat"
             }
@@ -24,6 +25,7 @@
             "binaryDir": "${sourceDir}/build/Desktop_Qt_6_11_1_MSVC2022_64bit_Debug",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "CMAKE_PREFIX_PATH": "C:/Qt/6.11.1/msvc2022_64",
                 "CMAKE_MT": "${sourceDir}/tools/mt_ok.bat"
             }

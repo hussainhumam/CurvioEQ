@@ -5,6 +5,7 @@
 #include "audio/surroundprocessor.h"
 #include "audio/dynamicrangesettings.h"
 #include "audio/audiochainorder.h"
+#include "audio/engineiosettings.h"
 #include "eqcolorpalette.h"
 
 #include <algorithm>
@@ -21,6 +22,155 @@ namespace {
 constexpr auto kRunKey = AppConstants::kAppId;
 constexpr auto kLegacyRunKey = "PerAppEQ";
 constexpr int kDefaultSurroundLevel = 50;
+
+QString enumKey(ProcessingPrecision value)
+{
+    return value == ProcessingPrecision::Float64 ? QStringLiteral("float64") : QStringLiteral("float32");
+}
+
+QString enumKey(ResampleQuality value)
+{
+    if (value == ResampleQuality::Fast) {
+        return QStringLiteral("fast");
+    }
+    if (value == ResampleQuality::Maximum) {
+        return QStringLiteral("maximum");
+    }
+    return QStringLiteral("balanced");
+}
+
+QString enumKey(ChannelLayout value)
+{
+    if (value == ChannelLayout::Stereo) {
+        return QStringLiteral("stereo");
+    }
+    if (value == ChannelLayout::Surround51) {
+        return QStringLiteral("surround51");
+    }
+    if (value == ChannelLayout::Surround71) {
+        return QStringLiteral("surround71");
+    }
+    return QStringLiteral("auto");
+}
+
+QString enumKey(OutputFormat value)
+{
+    if (value == OutputFormat::Float32) {
+        return QStringLiteral("float32");
+    }
+    if (value == OutputFormat::Pcm16) {
+        return QStringLiteral("pcm16");
+    }
+    return QStringLiteral("auto");
+}
+
+QString enumKey(ThreadPriority value)
+{
+    return value == ThreadPriority::Normal ? QStringLiteral("normal") : QStringLiteral("realtime");
+}
+
+QString enumKey(ShareMode value)
+{
+    return value == ShareMode::Exclusive ? QStringLiteral("exclusive") : QStringLiteral("shared");
+}
+
+QString enumKey(BufferSizePreset value)
+{
+    switch (value) {
+    case BufferSizePreset::Balanced:
+        return QStringLiteral("balanced");
+    case BufferSizePreset::Safe:
+        return QStringLiteral("safe");
+    case BufferSizePreset::Custom:
+        return QStringLiteral("custom");
+    case BufferSizePreset::Low:
+    default:
+        return QStringLiteral("low");
+    }
+}
+
+ProcessingPrecision parsePrecision(const QString &value)
+{
+    return value.compare(QStringLiteral("float64"), Qt::CaseInsensitive) == 0
+               || value.compare(QStringLiteral("64"), Qt::CaseInsensitive) == 0
+           ? ProcessingPrecision::Float64
+           : ProcessingPrecision::Float32;
+}
+
+ResampleQuality parseResampleQuality(const QString &value)
+{
+    if (value.compare(QStringLiteral("fast"), Qt::CaseInsensitive) == 0
+        || value.compare(QStringLiteral("linear"), Qt::CaseInsensitive) == 0) {
+        return ResampleQuality::Fast;
+    }
+    if (value.compare(QStringLiteral("maximum"), Qt::CaseInsensitive) == 0
+        || value.compare(QStringLiteral("sinc"), Qt::CaseInsensitive) == 0) {
+        return ResampleQuality::Maximum;
+    }
+    return ResampleQuality::Balanced;
+}
+
+ChannelLayout parseChannelLayout(const QString &value)
+{
+    if (value.compare(QStringLiteral("stereo"), Qt::CaseInsensitive) == 0
+        || value == QStringLiteral("2")) {
+        return ChannelLayout::Stereo;
+    }
+    if (value.compare(QStringLiteral("surround51"), Qt::CaseInsensitive) == 0
+        || value.compare(QStringLiteral("5.1"), Qt::CaseInsensitive) == 0) {
+        return ChannelLayout::Surround51;
+    }
+    if (value.compare(QStringLiteral("surround71"), Qt::CaseInsensitive) == 0
+        || value.compare(QStringLiteral("7.1"), Qt::CaseInsensitive) == 0) {
+        return ChannelLayout::Surround71;
+    }
+    return ChannelLayout::Auto;
+}
+
+OutputFormat parseOutputFormat(const QString &value)
+{
+    if (value.compare(QStringLiteral("float32"), Qt::CaseInsensitive) == 0
+        || value.compare(QStringLiteral("float"), Qt::CaseInsensitive) == 0) {
+        return OutputFormat::Float32;
+    }
+    if (value.compare(QStringLiteral("pcm16"), Qt::CaseInsensitive) == 0
+        || value.compare(QStringLiteral("int16"), Qt::CaseInsensitive) == 0) {
+        return OutputFormat::Pcm16;
+    }
+    return OutputFormat::Auto;
+}
+
+ThreadPriority parseThreadPriority(const QString &value)
+{
+    return value.compare(QStringLiteral("normal"), Qt::CaseInsensitive) == 0
+               ? ThreadPriority::Normal
+               : ThreadPriority::RealtimeAudio;
+}
+
+ShareMode parseShareMode(const QString &value)
+{
+    return value.compare(QStringLiteral("exclusive"), Qt::CaseInsensitive) == 0
+               ? ShareMode::Exclusive
+               : ShareMode::PreferShared;
+}
+
+BufferSizePreset parseBufferPreset(const QString &value)
+{
+    if (value.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0) {
+        return BufferSizePreset::Low;
+    }
+    if (value.compare(QStringLiteral("balanced"), Qt::CaseInsensitive) == 0) {
+        return BufferSizePreset::Balanced;
+    }
+    if (value.compare(QStringLiteral("safe"), Qt::CaseInsensitive) == 0) {
+        return BufferSizePreset::Safe;
+    }
+    if (value.compare(QStringLiteral("custom"), Qt::CaseInsensitive) == 0) {
+        return BufferSizePreset::Custom;
+    }
+    return BufferSizePreset::Low;
+}
+
 }
 
 QString SettingsStore::settingsFilePath()
@@ -142,6 +292,40 @@ bool SettingsStore::load()
         }
     }
 
+    m_settings.sampleRate = AppConstants::clampSampleRate(
+        root.value(QStringLiteral("sampleRate")).toInt(AppConstants::kDefaultSampleRate));
+    {
+        const int loadedFrames = root.value(QStringLiteral("bufferFrames"))
+                                     .toInt(AppConstants::kDefaultBufferFrames);
+        if (version >= 11 && root.contains(QStringLiteral("bufferPreset"))) {
+            const BufferSizePreset preset =
+                parseBufferPreset(root.value(QStringLiteral("bufferPreset")).toString());
+            m_settings.bufferFrames = EngineIoSettings::framesForBufferPreset(preset, loadedFrames);
+        } else {
+            m_settings.bufferFrames = AppConstants::clampBufferFrames(loadedFrames);
+        }
+    }
+    if (m_settings.bufferFrames <= 0) {
+        m_settings.bufferFrames = AppConstants::kDefaultBufferFrames;
+    }
+    m_settings.processingPrecision =
+        parsePrecision(root.value(QStringLiteral("processingPrecision")).toString());
+    m_settings.resampleQuality =
+        parseResampleQuality(root.value(QStringLiteral("resampleQuality")).toString());
+    m_settings.channelLayout = parseChannelLayout(root.value(QStringLiteral("channelLayout")).toString());
+    m_settings.outputFormat = parseOutputFormat(root.value(QStringLiteral("outputFormat")).toString());
+    m_settings.driftCorrection = root.value(QStringLiteral("driftCorrection")).toBool(false);
+    m_settings.safetyBufferAuto = root.value(QStringLiteral("safetyBufferAuto")).toBool(true);
+    m_settings.safetyBufferFrames =
+        std::clamp(root.value(QStringLiteral("safetyBufferFrames")).toInt(0),
+                   0,
+                   EngineIoSettings::kMaxSafetyExtraFrames);
+    m_settings.threadPriority = parseThreadPriority(root.value(QStringLiteral("threadPriority")).toString());
+    m_settings.cpuAffinityAuto = root.value(QStringLiteral("cpuAffinityAuto")).toBool(true);
+    m_settings.cpuAffinityCore = std::max(0, root.value(QStringLiteral("cpuAffinityCore")).toInt(0));
+    m_settings.shareMode = parseShareMode(root.value(QStringLiteral("shareMode")).toString());
+    m_settings.autoRecovery = root.value(QStringLiteral("autoRecovery")).toBool(true);
+
     if (!m_settings.setupCompleted && !m_settings.routingSinkDeviceId.isEmpty()
         && !m_settings.eqOutputDeviceId.isEmpty()) {
         m_settings.setupCompleted = true;
@@ -156,7 +340,7 @@ bool SettingsStore::save() const
     QDir().mkpath(QFileInfo(path).absolutePath());
 
     QJsonObject root;
-    root.insert(QStringLiteral("version"), 10);
+    root.insert(QStringLiteral("version"), 11);
     root.insert(QStringLiteral("startWithWindows"), m_settings.startWithWindows);
     root.insert(QStringLiteral("setupCompleted"), m_settings.setupCompleted);
     root.insert(QStringLiteral("muteRoutingSink"), m_settings.muteRoutingSink);
@@ -200,6 +384,23 @@ bool SettingsStore::save() const
         vst3Folders.append(folder);
     }
     root.insert(QStringLiteral("vst3ExtraFolders"), vst3Folders);
+    root.insert(QStringLiteral("sampleRate"), m_settings.sampleRate);
+    root.insert(QStringLiteral("bufferFrames"),
+                AppConstants::clampBufferFrames(m_settings.bufferFrames));
+    root.insert(QStringLiteral("bufferPreset"),
+                enumKey(EngineIoSettings::bufferPresetFromFrames(m_settings.bufferFrames)));
+    root.insert(QStringLiteral("processingPrecision"), enumKey(m_settings.processingPrecision));
+    root.insert(QStringLiteral("resampleQuality"), enumKey(m_settings.resampleQuality));
+    root.insert(QStringLiteral("channelLayout"), enumKey(m_settings.channelLayout));
+    root.insert(QStringLiteral("outputFormat"), enumKey(m_settings.outputFormat));
+    root.insert(QStringLiteral("driftCorrection"), m_settings.driftCorrection);
+    root.insert(QStringLiteral("safetyBufferAuto"), m_settings.safetyBufferAuto);
+    root.insert(QStringLiteral("safetyBufferFrames"), m_settings.safetyBufferFrames);
+    root.insert(QStringLiteral("threadPriority"), enumKey(m_settings.threadPriority));
+    root.insert(QStringLiteral("cpuAffinityAuto"), m_settings.cpuAffinityAuto);
+    root.insert(QStringLiteral("cpuAffinityCore"), m_settings.cpuAffinityCore);
+    root.insert(QStringLiteral("shareMode"), enumKey(m_settings.shareMode));
+    root.insert(QStringLiteral("autoRecovery"), m_settings.autoRecovery);
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

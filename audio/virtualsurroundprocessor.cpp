@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 
 namespace {
 
@@ -78,6 +79,10 @@ VirtualSurroundProcessor::VirtualSurroundProcessor()
 void VirtualSurroundProcessor::setEnabled(bool enabled)
 {
     m_enabled.store(enabled);
+    if (enabled) {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        ensureConfigured();
+    }
 }
 
 bool VirtualSurroundProcessor::isEnabled() const
@@ -89,7 +94,9 @@ void VirtualSurroundProcessor::setPreset(int presetId)
 {
     const int clamped = std::clamp(presetId, 0, static_cast<int>(HrtfPresetId::Count) - 1);
     m_presetId.store(clamped);
+    std::lock_guard<std::mutex> lock(m_configMutex);
     m_configured = false;
+    ensureConfigured();
 }
 
 void VirtualSurroundProcessor::setStrength(int strength)
@@ -113,10 +120,12 @@ void VirtualSurroundProcessor::setSampleRate(float sampleRate)
     if (sampleRate <= 0.f) {
         return;
     }
+    std::lock_guard<std::mutex> lock(m_configMutex);
     if (std::fabs(m_sampleRate - sampleRate) > 0.5f) {
         m_sampleRate = sampleRate;
         m_configured = false;
         configureCrossoverFilters();
+        ensureConfigured();
     }
 }
 
@@ -186,7 +195,20 @@ void VirtualSurroundProcessor::ensureConfigured()
     m_wetHighPassRight2.reset();
     m_activePresetId = presetId;
     m_activeSampleRate = m_sampleRate;
+    prepareScratch(4096);
     m_configured = true;
+}
+
+void VirtualSurroundProcessor::prepareScratch(int maxFrames)
+{
+    const int frames = std::max(maxFrames, 512);
+    m_maxScratchFrames = frames;
+    m_wetScratch.assign(static_cast<size_t>(frames) * 2, 0.f);
+    m_highLeft.assign(static_cast<size_t>(frames), 0.f);
+    m_highRight.assign(static_cast<size_t>(frames), 0.f);
+    for (auto &buffer : m_speakerBuffers) {
+        buffer.assign(static_cast<size_t>(frames), 0.f);
+    }
 }
 
 void VirtualSurroundProcessor::upmixFrame(float left, float right, std::array<float, kSpeakerCount> *speakers)
@@ -226,55 +248,57 @@ void VirtualSurroundProcessor::process(const float *stereoIn, float *stereoOut, 
         return;
     }
 
+    const size_t sampleCount = static_cast<size_t>(frameCount * 2);
     if (!m_enabled.load()) {
-        const size_t sampleCount = static_cast<size_t>(frameCount * 2);
         std::memcpy(stereoOut, stereoIn, sampleCount * sizeof(float));
         return;
     }
 
-    ensureConfigured();
-
-    const size_t wetSampleCount = static_cast<size_t>(frameCount * 2);
-    if (m_wetScratch.size() < wetSampleCount) {
-        m_wetScratch.resize(wetSampleCount);
+    std::unique_lock<std::mutex> lock(m_configMutex, std::try_to_lock);
+    if (!lock.owns_lock() || !m_configured || m_maxScratchFrames <= 0) {
+        std::memcpy(stereoOut, stereoIn, sampleCount * sizeof(float));
+        return;
     }
 
+    const int frames = std::min(frameCount, m_maxScratchFrames);
+    if (frames < frameCount) {
+        std::memcpy(stereoOut, stereoIn, sampleCount * sizeof(float));
+        return;
+    }
+
+    const size_t wetSampleCount = static_cast<size_t>(frames * 2);
     std::fill(m_wetScratch.begin(), m_wetScratch.begin() + static_cast<ptrdiff_t>(wetSampleCount), 0.f);
+    std::fill(m_highLeft.begin(), m_highLeft.begin() + frames, 0.f);
+    std::fill(m_highRight.begin(), m_highRight.begin() + frames, 0.f);
+    for (int channel = 0; channel < kSpeakerCount; ++channel) {
+        std::fill(m_speakerBuffers[static_cast<size_t>(channel)].begin(),
+                  m_speakerBuffers[static_cast<size_t>(channel)].begin() + frames,
+                  0.f);
+    }
 
-    std::array<std::vector<float>, kSpeakerCount> speakerBuffers{};
-    std::vector<float> highLeft(static_cast<size_t>(frameCount), 0.f);
-    std::vector<float> highRight(static_cast<size_t>(frameCount), 0.f);
-
-    for (int frame = 0; frame < frameCount; ++frame) {
+    for (int frame = 0; frame < frames; ++frame) {
         const float left = stereoIn[static_cast<size_t>(frame * 2)];
         const float right = stereoIn[static_cast<size_t>(frame * 2 + 1)];
-        highLeft[static_cast<size_t>(frame)] = m_spatialHighPassLeft.process(left);
-        highRight[static_cast<size_t>(frame)] = m_spatialHighPassRight.process(right);
-    }
-
-    for (int channel = 0; channel < kSpeakerCount; ++channel) {
-        speakerBuffers[static_cast<size_t>(channel)].assign(static_cast<size_t>(frameCount), 0.f);
+        m_highLeft[static_cast<size_t>(frame)] = m_spatialHighPassLeft.process(left);
+        m_highRight[static_cast<size_t>(frame)] = m_spatialHighPassRight.process(right);
     }
 
     std::array<float, kSpeakerCount> speakers{};
-    for (int frame = 0; frame < frameCount; ++frame) {
-        upmixFrame(highLeft[static_cast<size_t>(frame)], highRight[static_cast<size_t>(frame)], &speakers);
+    for (int frame = 0; frame < frames; ++frame) {
+        upmixFrame(m_highLeft[static_cast<size_t>(frame)], m_highRight[static_cast<size_t>(frame)], &speakers);
         for (int channel = 0; channel < kSpeakerCount; ++channel) {
             if (speakers[static_cast<size_t>(channel)] == 0.f) {
                 continue;
             }
-            speakerBuffers[static_cast<size_t>(channel)][static_cast<size_t>(frame)] =
+            m_speakerBuffers[static_cast<size_t>(channel)][static_cast<size_t>(frame)] =
                 speakers[static_cast<size_t>(channel)];
         }
     }
 
     for (int channel = 0; channel < kSpeakerCount; ++channel) {
-        if (speakerBuffers[static_cast<size_t>(channel)].empty()) {
-            continue;
-        }
         bool hasSignal = false;
-        for (float sample : speakerBuffers[static_cast<size_t>(channel)]) {
-            if (sample != 0.f) {
+        for (int frame = 0; frame < frames; ++frame) {
+            if (m_speakerBuffers[static_cast<size_t>(channel)][static_cast<size_t>(frame)] != 0.f) {
                 hasSignal = true;
                 break;
             }
@@ -283,13 +307,13 @@ void VirtualSurroundProcessor::process(const float *stereoIn, float *stereoOut, 
             continue;
         }
         m_convolvers[static_cast<size_t>(channel)].processAccumulate(
-            speakerBuffers[static_cast<size_t>(channel)].data(), m_wetScratch.data(), frameCount);
+            m_speakerBuffers[static_cast<size_t>(channel)].data(), m_wetScratch.data(), frames);
     }
 
-    normalizeAndLimitWet(frameCount);
+    normalizeAndLimitWet(frames);
 
     const float wetMix = strengthToMix(m_strength.load());
-    for (int frame = 0; frame < frameCount; ++frame) {
+    for (int frame = 0; frame < frames; ++frame) {
         const size_t index = static_cast<size_t>(frame * 2);
         const float inLeft = stereoIn[index];
         const float inRight = stereoIn[index + 1];

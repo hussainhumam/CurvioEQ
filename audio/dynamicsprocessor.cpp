@@ -87,6 +87,12 @@ void DynamicsProcessor::setAmount(int amount)
     m_amount.store(clampDynamicRangeAmount(amount));
 }
 
+void DynamicsProcessor::setUseDoublePrecision(bool enabled)
+{
+    m_useDouble.store(enabled, std::memory_order_release);
+    reset();
+}
+
 void DynamicsProcessor::setSampleRate(float sampleRate)
 {
     if (sampleRate <= 0.f) {
@@ -102,6 +108,8 @@ void DynamicsProcessor::reset()
 {
     m_envelope = 0.f;
     m_rmsState = 0.f;
+    m_envelopeD = 0.0;
+    m_rmsStateD = 0.0;
 }
 
 DynamicsProcessor::CompressorParams DynamicsProcessor::paramsForAmount(int amount)
@@ -168,8 +176,45 @@ void DynamicsProcessor::process(float *interleaved, int frameCount, int channelC
 
     const CompressorParams params = paramsForAmount(m_amount.load());
     const float rmsCoeff = std::exp(-1.f / (0.010f * m_sampleRate));
+    const bool useDouble = m_useDouble.load(std::memory_order_acquire);
 
     for (int frame = 0; frame < frameCount; ++frame) {
+        if (useDouble) {
+            double peak = 0.0;
+            double sumSquares = 0.0;
+            for (int channel = 0; channel < channelCount; ++channel) {
+                const double sample =
+                    static_cast<double>(interleaved[static_cast<size_t>(frame * channelCount + channel)]);
+                peak = std::max(peak, std::fabs(sample));
+                sumSquares += sample * sample;
+            }
+
+            const double rmsInstant = std::sqrt(sumSquares / static_cast<double>(channelCount));
+            const double rmsC = static_cast<double>(rmsCoeff);
+            m_rmsStateD = rmsC * m_rmsStateD + (1.0 - rmsC) * rmsInstant;
+            const double detection = std::max(m_rmsStateD, peak * 0.85);
+            if (detection > m_envelopeD) {
+                m_envelopeD = static_cast<double>(params.attackCoeff) * m_envelopeD
+                    + (1.0 - static_cast<double>(params.attackCoeff)) * detection;
+            } else {
+                m_envelopeD = static_cast<double>(params.releaseCoeff) * m_envelopeD
+                    + (1.0 - static_cast<double>(params.releaseCoeff)) * detection;
+            }
+
+            const float gain = softKneeGain(static_cast<float>(m_envelopeD), params);
+            const float blend = params.blend;
+            for (int channel = 0; channel < channelCount; ++channel) {
+                const size_t index = static_cast<size_t>(frame * channelCount + channel);
+                const double dry = static_cast<double>(interleaved[index]);
+                const double compressed = dry * static_cast<double>(gain);
+                double wet = dry + static_cast<double>(blend) * (compressed - dry);
+                if (gain < dbToLinear(-12.f)) {
+                    wet = std::tanh(wet);
+                }
+                interleaved[index] = static_cast<float>(wet);
+            }
+            continue;
+        }
         float peak = 0.f;
         float sumSquares = 0.f;
         for (int channel = 0; channel < channelCount; ++channel) {

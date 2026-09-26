@@ -1039,8 +1039,8 @@ void printDspArchitectureState()
     dspPrint(false, "  Session I/O      : lock-free SPSC ring buffer\n");
     dspPrint(false, "  Ring capacity    : %d frames (target fill %d, high %d)\n",
                AppConstants::kSessionRingBufferFrames,
-               AppConstants::kTargetRingFillFrames,
-               AppConstants::kHighRingFillFrames);
+               AppConstants::ringTargetFillFrames(AppConstants::kDefaultBufferFrames),
+               AppConstants::ringHighFillFrames(AppConstants::kDefaultBufferFrames));
     dspPrint(false, "  Mix bus          : soft-knee limiter\n");
     dspPrint(false, "  Session ceiling  : per-band STFT limiter (spectrum line)\n");
     dspPrint(false, "  Pipeline         : user-ordered EQ / HRTF / dynamics / loudness (resample last)\n");

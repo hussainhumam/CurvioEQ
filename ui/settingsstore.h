@@ -5,7 +5,9 @@
 #include <QStringList>
 
 #include "ui/eqcolorpalette.h"
+#include "ui/appconstants.h"
 #include "audio/audiochainorder.h"
+#include "audio/engineiosettings.h"
 #include "audio/virtualsurroundsettings.h"
 #include "audio/dynamicrangesettings.h"
 
@@ -37,6 +39,40 @@ struct AppSettings {
     std::array<int, kSurroundChannelCount> surroundChannelLevels = defaultVirtualSurroundChannelLevels();
     QString lastShownChangelogVersion;
     QStringList vst3ExtraFolders;
+    int sampleRate = AppConstants::kDefaultSampleRate;
+    int bufferFrames = AppConstants::kDefaultBufferFrames;
+    ProcessingPrecision processingPrecision = ProcessingPrecision::Float32;
+    ResampleQuality resampleQuality = ResampleQuality::Balanced;
+    ChannelLayout channelLayout = ChannelLayout::Auto;
+    OutputFormat outputFormat = OutputFormat::Auto;
+    bool driftCorrection = false;
+    bool safetyBufferAuto = true;
+    int safetyBufferFrames = 0;
+    ThreadPriority threadPriority = ThreadPriority::RealtimeAudio;
+    bool cpuAffinityAuto = true;
+    int cpuAffinityCore = 0;
+    ShareMode shareMode = ShareMode::PreferShared;
+    bool autoRecovery = true;
+
+    EngineIoSettings engineIo() const
+    {
+        EngineIoSettings io;
+        io.sampleRate = AppConstants::clampSampleRate(sampleRate);
+        io.bufferFrames = AppConstants::clampBufferFrames(bufferFrames);
+        io.precision = processingPrecision;
+        io.resampleQuality = resampleQuality;
+        io.channelLayout = channelLayout;
+        io.outputFormat = outputFormat;
+        io.driftCorrection = driftCorrection;
+        io.safetyBufferAuto = safetyBufferAuto;
+        io.safetyBufferFrames = safetyBufferFrames;
+        io.threadPriority = threadPriority;
+        io.cpuAffinityAuto = cpuAffinityAuto;
+        io.cpuAffinityCore = cpuAffinityCore;
+        io.shareMode = shareMode;
+        io.autoRecovery = autoRecovery;
+        return io;
+    }
 };
 
 class SettingsStore

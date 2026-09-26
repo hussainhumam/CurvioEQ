@@ -20,6 +20,7 @@ public:
     float threshold() const;
     void reset();
     void process(float *interleaved, int frameCount, int channelCount);
+    void setUseDoublePrecision(bool enabled);
 
 private:
     static constexpr int kMaxChannels = 8;
@@ -34,11 +35,13 @@ private:
     int m_outRead = 0;
     int m_outCount = 0;
     std::atomic<float> m_threshold{1.f};
+    std::atomic<bool> m_useDouble{false};
 
     std::vector<float> m_window;
     std::array<int, kBandCount> m_barBin0{};
     std::array<int, kBandCount> m_barBin1{};
     std::array<float, kBandCount> m_envelope{};
+    std::array<double, kBandCount> m_envelopeD{};
 
     std::array<std::vector<float>, kMaxChannels> m_input;
     std::array<std::vector<float>, kMaxChannels> m_ola;

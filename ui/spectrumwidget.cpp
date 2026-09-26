@@ -5,7 +5,6 @@
 #include "appconstants.h"
 
 #include <QCheckBox>
-#include <QCursor>
 #include <QEvent>
 #include <QFont>
 #include <QHBoxLayout>
@@ -65,11 +64,13 @@ QPainterPath buildFilledCurvePath(const QRectF &plotRect, const QVector<float> &
 }
 
 constexpr int kPlotLeftMargin = 8;
-constexpr int kPlotTopMargin = 4;
-constexpr int kPlotBottomMargin = 8;
-constexpr int kRightScaleWidth = 58;
+constexpr int kPlotTopMargin = 12;
+constexpr int kPlotBottomMargin = 16;
+constexpr int kHandleWidgetOverflow = 6;
+constexpr int kRightScaleWidth = 72;
+constexpr int kHandlePointerWidth = 7;
 constexpr int kHandleWidth = 54;
-constexpr int kHandleHeight = 18;
+constexpr int kHandleHeight = 20;
 constexpr float kScaleMarksDb[] = {0.f, -12.f, -24.f, -36.f, -48.f};
 
 QString formatCeilingDb(float db)
@@ -100,6 +101,9 @@ SpectrumPlotArea::SpectrumPlotArea(QWidget *parent)
 
     m_handleLabel->setAlignment(Qt::AlignCenter);
     m_handleLabel->setAutoFillBackground(false);
+    m_handleLabel->setAttribute(Qt::WA_TranslucentBackground);
+    m_handleLabel->setStyleSheet(QStringLiteral("background: transparent;"));
+    m_handleLabel->setContentsMargins(kHandlePointerWidth, 0, 4, 0);
     m_handleLabel->setCursor(Qt::OpenHandCursor);
     m_handleLabel->installEventFilter(this);
     layoutHandle();
@@ -120,9 +124,40 @@ QRect SpectrumPlotArea::handleRect() const
     }
     const QRect plot = plotRect();
     const int y = std::clamp(dbToY(m_ceilingDb) - kHandleHeight / 2,
-                             plot.top(),
-                             plot.bottom() - kHandleHeight);
-    return QRect(plot.right() + 3, y, kHandleWidth, kHandleHeight);
+                             -kHandleWidgetOverflow,
+                             std::max(0, height() - kHandleHeight + kHandleWidgetOverflow));
+    return QRect(plot.right(), y, kHandlePointerWidth + kHandleWidth, kHandleHeight);
+}
+
+QPainterPath SpectrumPlotArea::handleCalloutPath() const
+{
+    const QRect box = handleRect();
+    QPainterPath path;
+    if (box.width() <= kHandlePointerWidth || box.height() < 8) {
+        return path;
+    }
+
+    const QRectF body(box.left() + kHandlePointerWidth,
+                      box.top() + 0.5,
+                      box.width() - kHandlePointerWidth - 0.5,
+                      box.height() - 1.0);
+    const qreal r = std::min(4.0, std::min(body.width(), body.height()) * 0.35);
+    const qreal tipX = box.left() + 0.5;
+    const qreal tipY = std::clamp(static_cast<qreal>(dbToY(m_ceilingDb)),
+                                  body.top(),
+                                  body.bottom());
+
+    // One outline: left vertex is the pointer; only the two right corners are rounded
+    // so the triangle is the left side of the same box, not a separate dart.
+    path.moveTo(tipX, tipY);
+    path.lineTo(body.left(), body.top());
+    path.lineTo(body.right() - r, body.top());
+    path.quadTo(body.right(), body.top(), body.right(), body.top() + r);
+    path.lineTo(body.right(), body.bottom() - r);
+    path.quadTo(body.right(), body.bottom(), body.right() - r, body.bottom());
+    path.lineTo(body.left(), body.bottom());
+    path.closeSubpath();
+    return path;
 }
 
 void SpectrumPlotArea::layoutHandle()
@@ -133,13 +168,14 @@ void SpectrumPlotArea::layoutHandle()
     m_handleLabel->setText(formatCeilingDb(m_ceilingDb));
     m_handleLabel->adjustSize();
     const QRect plot = plotRect();
-    const int labelWidth = std::max(m_handleLabel->width(), kHandleWidth - 4);
-    const int labelHeight = std::max(m_handleLabel->height(), kHandleHeight);
+    const int labelWidth = std::max(m_handleLabel->sizeHint().width(),
+                                    kHandlePointerWidth + kHandleWidth);
+    const int labelHeight = std::max(m_handleLabel->sizeHint().height(), kHandleHeight);
     m_handleLabel->resize(labelWidth, labelHeight);
     const int y = std::clamp(dbToY(m_ceilingDb) - labelHeight / 2,
-                             plot.top(),
-                             std::max(plot.top(), plot.bottom() - labelHeight));
-    m_handleLabel->move(plot.right() + 4, y);
+                             -kHandleWidgetOverflow,
+                             std::max(0, height() - labelHeight + kHandleWidgetOverflow));
+    m_handleLabel->move(plot.right(), y);
 }
 
 void SpectrumPlotArea::setGrabCursor(bool grabbing)
@@ -258,7 +294,8 @@ void SpectrumPlotArea::paintEvent(QPaintEvent *event)
             continue;
         }
         painter.setPen(scaleColor);
-        const QRect labelRect(plot.right() + 8, y - 8, kRightScaleWidth - 12, 16);
+        const QRect labelRect(plot.right() + kHandlePointerWidth + 4, y - 8,
+                              kRightScaleWidth - kHandlePointerWidth - 8, 16);
         painter.drawText(labelRect, Qt::AlignLeft | Qt::AlignVCenter, formatScaleDb(markDb));
     }
 
@@ -301,9 +338,13 @@ void SpectrumPlotArea::paintEvent(QPaintEvent *event)
     painter.drawLine(plot.left() + 1, ceilingY, plot.right() - 1, ceilingY);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    const QRect handle = handleRect();
-    painter.setPen(QPen(lineColor, 1.0));
-    painter.drawLine(plot.right() + 1, ceilingY, handle.left(), ceilingY);
+    const QPainterPath callout = handleCalloutPath();
+    if (!callout.isEmpty()) {
+        painter.setBrush(palette().button().color());
+        painter.setPen(QPen(lineColor, 1.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.drawPath(callout);
+    }
 }
 
 void SpectrumPlotArea::mousePressEvent(QMouseEvent *event)

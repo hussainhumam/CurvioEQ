@@ -19,9 +19,12 @@ public:
     float threshold() const;
     void reset();
     void process(float *interleaved, int frameCount, int channelCount);
+    void setUseDoublePrecision(bool enabled);
 
 private:
     float m_sampleRate = 48000.f;
     float m_envelope = 0.f;
+    double m_envelopeD = 0.0;
     std::atomic<float> m_threshold{kDefaultThreshold};
+    std::atomic<bool> m_useDouble{false};
 };

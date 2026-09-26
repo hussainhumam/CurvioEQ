@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -26,6 +27,7 @@ public:
         m_buffer.assign(capacity * static_cast<size_t>(m_channelCount), 0.f);
         m_writeIndex.store(0, std::memory_order_relaxed);
         m_readIndex.store(0, std::memory_order_relaxed);
+        bumpGeneration();
     }
 
     void clear()
@@ -34,6 +36,10 @@ public:
         m_readIndex.store(0, std::memory_order_relaxed);
     }
 
+    uint64_t generation() const { return m_generation.load(std::memory_order_acquire); }
+    void bumpGeneration() { m_generation.fetch_add(1, std::memory_order_acq_rel); }
+
+    size_t capacityFrames() const { return m_capacityFrames; }
     size_t availableFrames() const
     {
         const size_t writeIndex = m_writeIndex.load(std::memory_order_acquire);
@@ -142,6 +148,7 @@ private:
     size_t m_capacityFrames = 2048;
     size_t m_mask = 2047;
     std::vector<float> m_buffer;
+    std::atomic<uint64_t> m_generation{0};
     alignas(64) std::atomic<size_t> m_writeIndex{0};
     alignas(64) std::atomic<size_t> m_readIndex{0};
 };

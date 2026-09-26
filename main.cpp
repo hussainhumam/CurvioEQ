@@ -11,6 +11,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QTimer>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -123,18 +124,35 @@ int main(int argc, char *argv[])
     QApplication::setQuitOnLastWindowClosed(false);
 
     const bool startedAtLogin = hasCommandLineFlag(argc, argv, "--startup");
+    QString startAtAppStartupExe;
+    const QStringList args = QCoreApplication::arguments();
+    for (int i = 1; i < args.size(); ++i) {
+        if (args.at(i) == QStringLiteral("--start-at-app-startup") && i + 1 < args.size()) {
+            startAtAppStartupExe = args.at(i + 1);
+            break;
+        }
+    }
 
-    if (SingleInstanceServer::notifyExistingInstance()) {
+    QByteArray instancePayload = QByteArrayLiteral("show");
+    if (!startAtAppStartupExe.isEmpty()) {
+        instancePayload = QByteArrayLiteral("SAS|") + startAtAppStartupExe.toUtf8();
+    }
+    if (SingleInstanceServer::notifyExistingInstance(instancePayload)) {
         return 0;
     }
 
     MainWindow w;
-    if (startedAtLogin) {
+    if (startedAtLogin && startAtAppStartupExe.isEmpty()) {
         w.hide();
     } else {
         w.show();
         w.raise();
         w.activateWindow();
+    }
+    if (!startAtAppStartupExe.isEmpty()) {
+        QTimer::singleShot(0, &w, [&w, startAtAppStartupExe]() {
+            w.handleStartAtAppStartup(startAtAppStartupExe);
+        });
     }
     return QApplication::exec();
 }

@@ -7,7 +7,7 @@ set "ROOT=%~dp0"
 set "DIST=%ROOT%dist"
 set "STAGE=%DIST%\portable-stage"
 set "PAYLOAD=%STAGE%\CurvioEQ"
-set "ZIP=%DIST%\CurvioEQ-1.3.1-portable.zip"
+set "ZIP=%DIST%\CurvioEQ-1.3.2-portable.zip"
 
 if exist "%STAGE%" rmdir /s /q "%STAGE%"
 if exist "%ZIP%" del /f /q "%ZIP%"

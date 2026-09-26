@@ -111,6 +111,65 @@ void releaseVolumes(const std::vector<ISimpleAudioVolume *> &volumes)
 
 } // namespace
 
+bool AudioSessionVolume::getMute(unsigned long processId, bool *muted, QString *errorMessage)
+{
+    if (!muted) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Invalid mute output");
+        }
+        return false;
+    }
+
+    const std::vector<ISimpleAudioVolume *> volumes = collectSimpleVolumesForProcess(processId);
+    if (volumes.empty()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("No active audio session found for that app");
+        }
+        return false;
+    }
+
+    BOOL value = FALSE;
+    const HRESULT hr = volumes.front()->GetMute(&value);
+    releaseVolumes(volumes);
+    if (FAILED(hr)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Failed to read app mute state");
+        }
+        return false;
+    }
+
+    *muted = value != FALSE;
+    return true;
+}
+
+bool AudioSessionVolume::setMute(unsigned long processId, bool muted, QString *errorMessage)
+{
+    const std::vector<ISimpleAudioVolume *> volumes = collectSimpleVolumesForProcess(processId);
+    if (volumes.empty()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("No active audio session found for that app");
+        }
+        return false;
+    }
+
+    bool anySucceeded = false;
+    for (ISimpleAudioVolume *volume : volumes) {
+        const HRESULT hr = volume->SetMute(muted ? TRUE : FALSE, nullptr);
+        if (SUCCEEDED(hr)) {
+            anySucceeded = true;
+        }
+    }
+    releaseVolumes(volumes);
+
+    if (!anySucceeded) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Failed to set app mute state");
+        }
+        return false;
+    }
+    return true;
+}
+
 bool AudioSessionVolume::toggleMute(unsigned long processId, QString *errorMessage)
 {
     const std::vector<ISimpleAudioVolume *> volumes = collectSimpleVolumesForProcess(processId);

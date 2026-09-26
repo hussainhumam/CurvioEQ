@@ -41,6 +41,7 @@ public:
 
     void setSampleRate(float sampleRate, int maxBlockSize);
     bool process(float *interleaved, int frameCount, int channelCount);
+    int latencySamples() const;
 
     QByteArray saveState() const;
     bool restoreState(const QByteArray &state);

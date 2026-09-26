@@ -14,7 +14,7 @@ SingleInstanceServer::SingleInstanceServer(QObject *parent)
 {
 }
 
-bool SingleInstanceServer::notifyExistingInstance()
+bool SingleInstanceServer::notifyExistingInstance(const QByteArray &payload)
 {
     QLocalSocket socket;
     socket.connectToServer(QString::fromLatin1(kSingleInstanceServerName));
@@ -22,7 +22,7 @@ bool SingleInstanceServer::notifyExistingInstance()
         return false;
     }
 
-    socket.write("show");
+    socket.write(payload);
     socket.flush();
     socket.waitForBytesWritten(500);
     return true;
@@ -48,8 +48,13 @@ void SingleInstanceServer::listen()
             return;
         }
 
-        if (socket->waitForReadyRead(500) && socket->readAll().trimmed() == QByteArray("show")) {
-            emit showRequested();
+        if (socket->waitForReadyRead(500)) {
+            const QByteArray data = socket->readAll().trimmed();
+            if (data == QByteArrayLiteral("show")) {
+                emit showRequested();
+            } else if (data.startsWith(QByteArrayLiteral("SAS|"))) {
+                emit startAtAppStartupRequested(QString::fromUtf8(data.mid(4)));
+            }
         }
         socket->deleteLater();
     });

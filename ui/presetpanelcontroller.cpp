@@ -254,10 +254,35 @@ void PresetPanelController::applyPresetToUi(const EqPreset &preset)
     }
 }
 
-void PresetPanelController::onSaveClicked()
+void PresetPanelController::markDirty()
+{
+    m_dirty = true;
+}
+
+void PresetPanelController::markClean(const QString &presetId)
+{
+    m_cleanPresetId = presetId;
+    m_dirty = presetId.isEmpty();
+}
+
+bool PresetPanelController::ensureNamedPreset(EqPreset *outPreset)
+{
+    if (!m_dirty && !m_cleanPresetId.isEmpty() && m_store) {
+        const EqPreset preset = m_store->presetById(m_cleanPresetId);
+        if (!preset.id.isEmpty()) {
+            if (outPreset) {
+                *outPreset = preset;
+            }
+            return true;
+        }
+    }
+    return saveCurrentPresetInteractive(outPreset);
+}
+
+bool PresetPanelController::saveCurrentPresetInteractive(EqPreset *createdPreset)
 {
     if (!m_store) {
-        return;
+        return false;
     }
 
     const EqState currentEq = m_eqStateReader ? m_eqStateReader() : EqState{};
@@ -267,7 +292,7 @@ void PresetPanelController::onSaveClicked()
     SavePresetDialog dialog(defaultName, currentEq.advanced,
                             m_listWidget ? m_listWidget->window() : nullptr);
     if (dialog.exec() != QDialog::Accepted) {
-        return;
+        return false;
     }
 
     EqPreset preset;
@@ -278,25 +303,25 @@ void PresetPanelController::onSaveClicked()
     preset.hasAudioChain = dialog.includeAudioChain();
     if (preset.hasEq) {
         if (!m_eqStateReader) {
-            return;
+            return false;
         }
         preset.eq = currentEq;
     }
     if (preset.hasSurround) {
         if (!m_surroundStateReader) {
-            return;
+            return false;
         }
         preset.surround = m_surroundStateReader();
     }
     if (preset.hasDynamics) {
         if (!m_dynamicsStateReader) {
-            return;
+            return false;
         }
         preset.dynamics = m_dynamicsStateReader();
     }
     if (preset.hasAudioChain) {
         if (!m_audioChainOrderReader) {
-            return;
+            return false;
         }
         preset.audioChainOrder = m_audioChainOrderReader();
     }
@@ -305,14 +330,24 @@ void PresetPanelController::onSaveClicked()
     if (!m_store->addUserPreset(preset, &created)) {
         emit errorOccurred(QStringLiteral("Save preset failed"),
                            QStringLiteral("Could not write presets to disk"));
-        return;
+        return false;
     }
 
     refreshList();
     selectPresetById(created.id);
+    markClean(created.id);
     const QString sections = PresetStore::includedSectionsLabel(created);
     emit logMessage(QStringLiteral("INFO"),
                     QStringLiteral("Saved preset: %1 (%2)").arg(created.name, sections));
+    if (createdPreset) {
+        *createdPreset = created;
+    }
+    return true;
+}
+
+void PresetPanelController::onSaveClicked()
+{
+    saveCurrentPresetInteractive(nullptr);
 }
 
 void PresetPanelController::onImportClicked()
@@ -395,6 +430,9 @@ void PresetPanelController::onDeleteClicked()
         return;
     }
 
+    if (m_cleanPresetId == presetId) {
+        markClean({});
+    }
     refreshList();
     emit logMessage(QStringLiteral("INFO"), QStringLiteral("Deleted preset: %1").arg(preset.name));
 }
@@ -415,6 +453,7 @@ void PresetPanelController::onAutoEqClicked()
     refreshList();
     selectPresetById(imported.id);
     applyPresetToUi(imported);
+    markClean(imported.id);
     emit presetApplied(imported);
     emit logMessage(QStringLiteral("INFO"),
                     QStringLiteral("Imported AutoEQ preset: %1").arg(imported.name));
@@ -477,6 +516,7 @@ void PresetPanelController::onCurrentPresetChanged(QListWidgetItem *current, QLi
     }
 
     applyPresetToUi(preset);
+    markClean(preset.id);
     emit presetApplied(preset);
     const QString sections = PresetStore::includedSectionsLabel(preset);
     emit logMessage(QStringLiteral("INFO"),

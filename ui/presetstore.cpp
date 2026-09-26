@@ -2,6 +2,7 @@
 
 #include "apppaths.h"
 #include "audio/surroundprocessor.h"
+#include "ui/appconstants.h"
 
 #include <algorithm>
 
@@ -183,6 +184,7 @@ QJsonObject PresetStore::toJsonObject(const EqPreset &preset)
                       preset.eq.advanced ? QStringLiteral("advanced") : QStringLiteral("simple"));
         object.insert(QStringLiteral("gainsDb"), gains);
         object.insert(QStringLiteral("filters"), filters);
+        object.insert(QStringLiteral("balance"), preset.eq.balance);
     }
 
     QJsonObject include;
@@ -456,6 +458,10 @@ bool PresetStore::parsePresetObject(const QJsonObject &object, EqPreset *preset,
         if (parsed.eq.advanced && parsed.eq.filterCount == 0) {
             parsed.eq = EqResponse::simpleToAdvanced(parsed.eq.gainsDb);
         }
+
+        parsed.eq.balance = std::clamp(object.value(QStringLiteral("balance")).toInt(0),
+                                       AppConstants::kMinBalance,
+                                       AppConstants::kMaxBalance);
     }
 
     if (parsed.hasSurround) {

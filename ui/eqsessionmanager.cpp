@@ -1,7 +1,6 @@
 #include "eqsessionmanager.h"
 
 #include "audio/audioengine.h"
-#include "audio/log.h"
 #include "audio/processloopbackcapture.h"
 #include "ui/appconstants.h"
 #include "ui/audiodeviceresolver.h"
@@ -32,6 +31,11 @@ EqSessionManager::EqSessionManager(AudioEngine *engine, SettingsStore *store, QO
         }
     });
     m_routingWatchdogTimer->start();
+
+    if (m_engine) {
+        connect(m_engine, &AudioEngine::deviceInvalidated, this, &EqSessionManager::restartActiveSessions,
+                Qt::QueuedConnection);
+    }
 }
 
 void EqSessionManager::setEqStateReader(std::function<EqState()> reader)
@@ -131,6 +135,35 @@ QVector<ConfiguredEqSession> EqSessionManager::configuredTraySessions() const
 
 bool EqSessionManager::enableForProcess(unsigned long processId)
 {
+    EqSessionSnapshot snapshot = m_snapshots.value(processId);
+    if (!snapshot.hasStoredGains && m_eqStateReader) {
+        snapshot.eq = m_eqStateReader();
+    }
+    if (m_surroundStateReader) {
+        snapshot.virtualSurround = m_surroundStateReader();
+    }
+    if (m_dynamicsStateReader) {
+        snapshot.dynamicRange = m_dynamicsStateReader();
+    }
+    if (m_audioChainOrderReader) {
+        snapshot.audioChainOrder = normalizeAudioChainOrder(m_audioChainOrderReader());
+    }
+    return startPreparedSession(processId, snapshot);
+}
+
+bool EqSessionManager::enableForProcess(unsigned long processId, const EqSessionStartSettings &settings)
+{
+    EqSessionSnapshot snapshot = m_snapshots.value(processId);
+    snapshot.eq = settings.eq;
+    snapshot.virtualSurround = settings.virtualSurround;
+    snapshot.dynamicRange = settings.dynamicRange;
+    snapshot.audioChainOrder = normalizeAudioChainOrder(settings.audioChainOrder);
+    snapshot.hasStoredGains = true;
+    return startPreparedSession(processId, snapshot);
+}
+
+bool EqSessionManager::startPreparedSession(unsigned long processId, EqSessionSnapshot snapshot)
+{
     if (!m_engine || processId == 0) {
         return false;
     }
@@ -144,20 +177,6 @@ bool EqSessionManager::enableForProcess(unsigned long processId)
         emit errorOccurred(QStringLiteral("Enable EQ"),
                            QStringLiteral("All label colors are in use. Disable EQ on another app first."));
         return false;
-    }
-
-    EqSessionSnapshot snapshot = m_snapshots.value(processId);
-    if (!snapshot.hasStoredGains && m_eqStateReader) {
-        snapshot.eq = m_eqStateReader();
-    }
-    if (m_surroundStateReader) {
-        snapshot.virtualSurround = m_surroundStateReader();
-    }
-    if (m_dynamicsStateReader) {
-        snapshot.dynamicRange = m_dynamicsStateReader();
-    }
-    if (m_audioChainOrderReader) {
-        snapshot.audioChainOrder = normalizeAudioChainOrder(m_audioChainOrderReader());
     }
 
     QString sinkDeviceId;
@@ -279,6 +298,52 @@ bool EqSessionManager::restoreForProcess(unsigned long processId)
     return enableForProcess(processId);
 }
 
+void EqSessionManager::restartActiveSessions()
+{
+    if (!m_engine || m_restarting) {
+        return;
+    }
+    m_restarting = true;
+
+    QVector<unsigned long> processIds;
+    for (auto it = m_snapshots.constBegin(); it != m_snapshots.constEnd(); ++it) {
+        if (it.value().active) {
+            processIds.push_back(it.key());
+        }
+    }
+    if (processIds.isEmpty()) {
+        m_restarting = false;
+        return;
+    }
+
+    for (unsigned long processId : processIds) {
+        if (m_eqStateReader) {
+            saveDraftForProcess(processId,
+                                m_eqStateReader(),
+                                m_surroundStateReader ? m_surroundStateReader() : VirtualSurroundSettings{},
+                                m_dynamicsStateReader ? m_dynamicsStateReader() : DynamicRangeSettings{},
+                                m_audioChainOrderReader ? m_audioChainOrderReader() : defaultAudioChainOrder());
+        }
+        m_engine->stopSession(processId);
+        EqSessionSnapshot snapshot = m_snapshots.value(processId);
+        snapshot.active = false;
+        m_snapshots.insert(processId, snapshot);
+    }
+
+    int restored = 0;
+    for (unsigned long processId : processIds) {
+        if (enableForProcess(processId)) {
+            ++restored;
+        }
+    }
+
+    emit logMessage(QStringLiteral("INFO"),
+                    QStringLiteral("Restarted EQ after audio I/O change (%1 app(s))").arg(restored));
+    emit eqStateChanged();
+    emit controlStateChanged();
+    m_restarting = false;
+}
+
 void EqSessionManager::saveDraftForProcess(unsigned long processId,
                                            const EqState &eqState,
                                            const VirtualSurroundSettings &virtualSurround,
@@ -357,6 +422,25 @@ void EqSessionManager::scheduleLiveGainsForProcess(unsigned long processId)
     }
     m_pendingGainPid = processId;
     m_gainDebounceTimer->start();
+}
+
+void EqSessionManager::applyLiveBalance(unsigned long processId, int balance)
+{
+    if (processId == 0) {
+        return;
+    }
+
+    const int clamped = std::clamp(balance, AppConstants::kMinBalance, AppConstants::kMaxBalance);
+    EqSessionSnapshot snapshot = m_snapshots.value(processId);
+    if (snapshot.eq.balance == clamped) {
+        return;
+    }
+
+    snapshot.eq.balance = clamped;
+    m_snapshots.insert(processId, snapshot);
+    if (snapshot.active && m_engine) {
+        m_engine->setSessionBalance(processId, clamped);
+    }
 }
 
 void EqSessionManager::pushLiveSurroundForProcess(unsigned long processId)
@@ -439,6 +523,9 @@ QVector<unsigned long> EqSessionManager::linkedProcessIds(unsigned long processI
 void EqSessionManager::onSessionStopped(unsigned long processId)
 {
     if (processId == 0) {
+        return;
+    }
+    if (m_engine && m_engine->isSessionActive(processId)) {
         return;
     }
 

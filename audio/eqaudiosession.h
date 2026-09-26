@@ -14,10 +14,13 @@
 #include "virtualsurroundprocessor.h"
 #include "virtualsurroundsettings.h"
 
+#include "engineiosettings.h"
+
 #include <QString>
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -35,9 +38,17 @@ struct SessionStartConfig {
     AudioChainOrder audioChainOrder{};
     float mixSampleRate = 48000.f;
     int mixChannelCount = 2;
+    int bufferFrames = 16;
+    int enginePeriodFrames = 0;
     QString sinkDeviceId;
     SpectrumCapture *spectrumCapture = nullptr;
     std::atomic<unsigned long> *spectrumProcessId = nullptr;
+    const std::atomic<uint64_t> *renderClockFrames = nullptr;
+    const std::atomic<uint64_t> *renderClockQpc = nullptr;
+    uint64_t qpcFrequency = 0;
+    int prerollFrames = 0;
+    EngineIoSettings io{};
+    std::function<void()> onDeviceInvalidated;
     std::function<void(unsigned long processId, const QString &errorMessage)> onThreadFinished;
 };
 
@@ -58,8 +69,11 @@ public:
     void stop();
 
     void maintainRouting();
+    void flushOutputRing();
+    bool mixPaused() const { return m_mixPaused.load(std::memory_order_acquire); }
 
     void setEqState(const EqState &eqState);
+    void setBalance(int balance);
     void setVirtualSurroundSettings(const VirtualSurroundSettings &settings);
     void setDynamicRangeSettings(const DynamicRangeSettings &settings);
     void setAudioChainOrder(const AudioChainOrder &order);
@@ -89,10 +103,19 @@ private:
     void processCaptureChunk(CaptureBuffers *buffers, int framesRead);
     void clearRoutingIfApplied();
     void finishThread(unsigned long processId, const QString &errorMessage = QString());
+    void wakeCaptureThread();
+    void logMeasuredLatency(float captureRate);
 
     unsigned long m_processId = 0;
     float m_mixSampleRate = 48000.f;
     int m_mixChannelCount = 2;
+    int m_bufferFrames = 16;
+    int m_enginePeriodFrames = 0;
+    int m_captureChunkFrames = 512;
+    int m_targetFillFrames = 512;
+    int m_highFillFrames = 1024;
+    int m_prerollFrames = 0;
+    EngineIoSettings m_ioSettings;
     bool m_routingApplied = false;
     QString m_sinkDeviceId;
     int m_routedProcessCount = 0;
@@ -109,13 +132,20 @@ private:
 
     SpectrumCapture *m_spectrumCapture = nullptr;
     std::atomic<unsigned long> *m_spectrumProcessId = nullptr;
+    const std::atomic<uint64_t> *m_renderClockFrames = nullptr;
+    const std::atomic<uint64_t> *m_renderClockQpc = nullptr;
+    uint64_t m_qpcFrequency = 0;
 
     std::atomic<uint64_t> m_audioChainPacked{packAudioChainOrder(defaultAudioChainOrder())};
     std::array<std::shared_ptr<Vst3Plugin>, kAudioChainAddonCount> m_addons;
+    std::array<std::shared_ptr<Vst3Plugin>, kAudioChainAddonCount> m_addonSnapshot;
     std::mutex m_addonMutex;
     std::atomic<float> m_outputGain{1.f};
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stopRequested{false};
+    std::atomic<bool> m_mixPaused{false};
+    std::function<void()> m_onDeviceInvalidated;
     std::function<void(unsigned long processId, const QString &errorMessage)> m_onThreadFinished;
     std::thread m_thread;
+    void *m_wakeEvent = nullptr;
 };

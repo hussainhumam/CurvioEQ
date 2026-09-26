@@ -12,6 +12,7 @@
 #include "ui/presetstore.h"
 #include "ui/settingsstore.h"
 #include "ui/spectrumanalyzer.h"
+#include "ui/startuppresetstore.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -19,6 +20,7 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QPushButton>
+#include <QSet>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -53,6 +55,8 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
+
+    void handleStartAtAppStartup(const QString &exePath);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -140,10 +144,16 @@ private:
     void updateSessionListAutoRefresh();
     void refreshSessionList();
     void resetMasterSlider();
+    void markCurrentPresetDirty();
+    bool enableEqWithPreset(unsigned long processId, const EqPreset &preset);
+    void bindStartupPresetForExe(const QString &exePath);
+    void applyStartupPresetsToVisibleSessions();
+    void attachAddonsForProcess(unsigned long processId);
 
     Ui::MainWindow *ui;
     AudioEngine m_audioEngine;
     PresetStore m_presetStore;
+    StartupPresetStore m_startupPresetStore;
     SettingsStore m_settingsStore;
     SpectrumCapture m_spectrumCapture;
     SpectrumWidget *m_spectrumWidget = nullptr;
@@ -179,6 +189,10 @@ private:
     QPushButton *m_advancedModeButton = nullptr;
     QStackedWidget *m_eqModeStack = nullptr;
     ParametricEqPanel *m_parametricPanel = nullptr;
+    QSlider *m_balanceSlider = nullptr;
+    QLabel *m_balanceLeftValueLabel = nullptr;
+    QLabel *m_balanceValueLabel = nullptr;
+    void updateBalanceLabels(int value);
     bool m_eqUiModeAdvanced = false;
 
     // Simple and Advanced keep independent parameters. Mode switches restore
@@ -214,6 +228,7 @@ private:
     unsigned long m_sliderEditPid = 0;
     bool m_loadingSliders = false;
     bool m_quitting = false;
+    QSet<unsigned long> m_startupApplyAttempted;
 };
 
 #endif // MAINWINDOW_H

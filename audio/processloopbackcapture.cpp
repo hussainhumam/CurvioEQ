@@ -1,6 +1,7 @@
 #include "processloopbackcapture.h"
 
 #include "log.h"
+#include "wasapierror.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -271,12 +272,12 @@ bool ProcessLoopbackCapture::open(unsigned long processId, float preferredSample
     }
 
     std::vector<DWORD> sampleRates;
-    const DWORD preferredRate = preferredSampleRate >= 44100.f ? static_cast<DWORD>(preferredSampleRate + 0.5f)
+    const DWORD preferredRate = preferredSampleRate >= 8000.f ? static_cast<DWORD>(preferredSampleRate + 0.5f)
                                                                : 0;
-    if (preferredRate == 48000 || preferredRate == 44100) {
+    if (preferredRate >= 8000) {
         sampleRates.push_back(preferredRate);
     }
-    for (const DWORD fallbackRate : {48000U, 44100U}) {
+    for (const DWORD fallbackRate : {48000U, 44100U, 96000U, 88200U, 192000U, 176400U, 32000U}) {
         if (std::find(sampleRates.begin(), sampleRates.end(), fallbackRate) == sampleRates.end()) {
             sampleRates.push_back(fallbackRate);
         }
@@ -359,6 +360,14 @@ bool ProcessLoopbackCapture::open(unsigned long processId, float preferredSample
     AudioLog::info(tag, QStringLiteral("Capture opened: %1 Hz, %2 channels")
                              .arg(m_sampleRate)
                              .arg(m_channelCount));
+    m_pendingRead = 0;
+    m_pendingFrames.clear();
+    m_lastDevicePosition = 0;
+    m_lastQpcPosition = 0;
+    m_capturedFrameCounter = 0;
+    m_deviceLost = false;
+    const size_t pendingReserve = static_cast<size_t>(std::max(m_channelCount, 1)) * 48000 * 2;
+    m_pendingFrames.reserve(pendingReserve);
     return true;
 }
 
@@ -383,16 +392,26 @@ void ProcessLoopbackCapture::close()
     m_channelCount = 0;
     m_bytesPerFrame = 0;
     m_pendingFrames.clear();
+    m_pendingRead = 0;
+    m_lastDevicePosition = 0;
+    m_lastQpcPosition = 0;
+    m_capturedFrameCounter = 0;
+    m_deviceLost = false;
 }
 
 bool ProcessLoopbackCapture::copyPendingFrames(float *interleavedBuffer, int frameCount, int *totalFramesRead)
 {
-    if (!totalFramesRead || m_pendingFrames.empty() || m_channelCount <= 0) {
+    if (!totalFramesRead || m_pendingFrames.empty() || m_channelCount <= 0
+        || m_pendingRead >= m_pendingFrames.size()) {
+        if (m_pendingRead >= m_pendingFrames.size()) {
+            m_pendingFrames.clear();
+            m_pendingRead = 0;
+        }
         return true;
     }
 
-    const int pendingFrameCount =
-        static_cast<int>(m_pendingFrames.size() / static_cast<size_t>(m_channelCount));
+    const size_t pendingSamples = m_pendingFrames.size() - m_pendingRead;
+    const int pendingFrameCount = static_cast<int>(pendingSamples / static_cast<size_t>(m_channelCount));
     const int framesToCopy = std::min(frameCount - *totalFramesRead, pendingFrameCount);
     if (framesToCopy <= 0) {
         return true;
@@ -400,11 +419,19 @@ bool ProcessLoopbackCapture::copyPendingFrames(float *interleavedBuffer, int fra
 
     const size_t sampleCount = static_cast<size_t>(framesToCopy * m_channelCount);
     std::memcpy(interleavedBuffer + static_cast<size_t>(*totalFramesRead * m_channelCount),
-                m_pendingFrames.data(),
+                m_pendingFrames.data() + m_pendingRead,
                 sampleCount * sizeof(float));
 
-    m_pendingFrames.erase(m_pendingFrames.begin(),
-                          m_pendingFrames.begin() + static_cast<ptrdiff_t>(sampleCount));
+    m_pendingRead += sampleCount;
+    if (m_pendingRead >= m_pendingFrames.size()) {
+        m_pendingFrames.clear();
+        m_pendingRead = 0;
+    } else if (m_pendingRead > m_pendingFrames.size() / 2) {
+        const size_t remaining = m_pendingFrames.size() - m_pendingRead;
+        std::memmove(m_pendingFrames.data(), m_pendingFrames.data() + m_pendingRead, remaining * sizeof(float));
+        m_pendingFrames.resize(remaining);
+        m_pendingRead = 0;
+    }
     *totalFramesRead += framesToCopy;
     return true;
 }
@@ -418,7 +445,23 @@ bool ProcessLoopbackCapture::appendPacketFrames(const BYTE *data,
         return true;
     }
 
+    if (m_pendingRead >= m_pendingFrames.size()) {
+        m_pendingFrames.clear();
+        m_pendingRead = 0;
+    } else if (m_pendingRead > 0 && m_pendingRead > m_pendingFrames.size() / 2) {
+        const size_t remaining = m_pendingFrames.size() - m_pendingRead;
+        std::memmove(m_pendingFrames.data(), m_pendingFrames.data() + m_pendingRead, remaining * sizeof(float));
+        m_pendingFrames.resize(remaining);
+        m_pendingRead = 0;
+    }
+
     const size_t sampleCount = static_cast<size_t>(numFramesAvailable * m_channelCount);
+    constexpr size_t kMaxPendingSamples = 48000 * 2 * 4;
+    if (m_pendingFrames.size() - m_pendingRead + sampleCount > kMaxPendingSamples) {
+        m_pendingFrames.clear();
+        m_pendingRead = 0;
+    }
+
     const size_t previousSize = m_pendingFrames.size();
     m_pendingFrames.resize(previousSize + sampleCount);
 
@@ -469,6 +512,9 @@ bool ProcessLoopbackCapture::read(float *interleavedBuffer, int frameCount, int 
         UINT32 packetLength = 0;
         HRESULT hr = m_captureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr)) {
+            if (wasapiDeviceLost(hr)) {
+                m_deviceLost = true;
+            }
             const QString message = QStringLiteral("GetNextPacketSize failed: %1")
                                         .arg(AudioLog::hresultToString(hr));
             if (errorMessage) {
@@ -484,14 +530,32 @@ bool ProcessLoopbackCapture::read(float *interleavedBuffer, int frameCount, int 
         BYTE *data = nullptr;
         UINT32 numFramesAvailable = 0;
         DWORD flags = 0;
-        hr = m_captureClient->GetBuffer(&data, &numFramesAvailable, &flags, nullptr, nullptr);
+        UINT64 devicePosition = 0;
+        UINT64 qpcPosition = 0;
+        hr = m_captureClient->GetBuffer(&data, &numFramesAvailable, &flags, &devicePosition, &qpcPosition);
         if (FAILED(hr)) {
+            if (wasapiDeviceLost(hr)) {
+                m_deviceLost = true;
+            }
             const QString message = QStringLiteral("GetBuffer failed: %1")
                                         .arg(AudioLog::hresultToString(hr));
             if (errorMessage) {
                 *errorMessage = message;
             }
             return false;
+        }
+        if (devicePosition != 0) {
+            m_lastDevicePosition = devicePosition;
+        } else {
+            m_capturedFrameCounter += numFramesAvailable;
+            m_lastDevicePosition = m_capturedFrameCounter;
+        }
+        if (qpcPosition != 0) {
+            m_lastQpcPosition = qpcPosition;
+        } else {
+            LARGE_INTEGER qpc = {};
+            QueryPerformanceCounter(&qpc);
+            m_lastQpcPosition = static_cast<uint64_t>(qpc.QuadPart);
         }
 
         const int framesToCopy = static_cast<int>(std::min<UINT32>(numFramesAvailable,
@@ -529,6 +593,9 @@ bool ProcessLoopbackCapture::read(float *interleavedBuffer, int frameCount, int 
 
         hr = m_captureClient->ReleaseBuffer(numFramesAvailable);
         if (FAILED(hr)) {
+            if (wasapiDeviceLost(hr)) {
+                m_deviceLost = true;
+            }
             const QString message = QStringLiteral("ReleaseBuffer failed: %1")
                                         .arg(AudioLog::hresultToString(hr));
             if (errorMessage) {

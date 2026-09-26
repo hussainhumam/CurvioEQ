@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ui/appconstants.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -30,6 +32,19 @@ struct EqState {
     std::array<float, kBandCount> gainsDb{};
     std::array<EqFilter, kMaxParametricFilters> filters{};
     int filterCount = 0;
+    int balance = 0;
+
+    static void stereoBalanceGains(int balance, float *leftGain, float *rightGain)
+    {
+        const int clamped = std::clamp(balance, AppConstants::kMinBalance, AppConstants::kMaxBalance);
+        if (clamped <= 0) {
+            *leftGain = 1.f;
+            *rightGain = 1.f + static_cast<float>(clamped) / static_cast<float>(-AppConstants::kMinBalance);
+        } else {
+            *leftGain = 1.f - static_cast<float>(clamped) / static_cast<float>(AppConstants::kMaxBalance);
+            *rightGain = 1.f;
+        }
+    }
 
     void clearFilters()
     {

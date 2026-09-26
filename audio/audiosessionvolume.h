@@ -14,6 +14,8 @@ public:
     // 1.5x perceived loudness (+10 dB ≈ 2x loud) → ~+5.85 dB ≈ 1.96x amplitude.
     static constexpr float kMaxOutputGain = 1.957144f;
 
+    static bool getMute(unsigned long processId, bool *muted, QString *errorMessage = nullptr);
+    static bool setMute(unsigned long processId, bool muted, QString *errorMessage = nullptr);
     static bool toggleMute(unsigned long processId, QString *errorMessage = nullptr);
     static bool getMasterVolume(unsigned long processId, float *level01, QString *errorMessage = nullptr);
     static bool setMasterVolume(unsigned long processId, float level01, QString *errorMessage = nullptr);

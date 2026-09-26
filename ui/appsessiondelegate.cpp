@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QPainter>
+#include <QPen>
 #include <QStyle>
 #include <QStringList>
 
@@ -14,6 +15,20 @@ constexpr int kPadding = 8;
 constexpr int kDotRadius = 8;
 constexpr int kDotMargin = 10;
 constexpr int kRightGutter = kDotMargin + kDotRadius * 2 + 6;
+constexpr QColor kMuteMarkColor(220, 70, 70);
+
+void drawMuteProhibition(QPainter *painter, const QPoint &center)
+{
+    QPen pen(kMuteMarkColor, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    painter->setPen(pen);
+    painter->setBrush(Qt::NoBrush);
+    const int radius = kDotRadius + 2;
+    painter->drawEllipse(center, radius, radius);
+
+    const qreal inset = radius * 0.46;
+    painter->drawLine(QPointF(center.x() - inset, center.y() - inset),
+                      QPointF(center.x() + inset, center.y() + inset));
+}
 }
 
 AppSessionDelegate::AppSessionDelegate(QObject *parent)
@@ -58,7 +73,8 @@ void AppSessionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
     const QString status = statusParts.join(QStringLiteral(" - "));
 
     const QRect rowRect = option.rect;
-    const int contentRight = eqActive ? rowRect.right() - kRightGutter : rowRect.right() - kPadding;
+    const bool showDotSlot = eqActive || muted;
+    const int contentRight = showDotSlot ? rowRect.right() - kRightGutter : rowRect.right() - kPadding;
 
     const int iconX = rowRect.left() + kPadding;
     const int iconY = rowRect.top() + (rowRect.height() - kIconSize) / 2;
@@ -90,21 +106,25 @@ void AppSessionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
     painter->drawText(statusRect, Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(status, Qt::ElideRight, textWidth));
 
-    if (!eqActive) {
+    if (!showDotSlot) {
         return;
     }
 
-    QColor color = index.data(SessionListController::RoleEqColor).value<QColor>();
-    if (!color.isValid()) {
-        color = QColor(70, 130, 220);
-    }
-
+    const QPoint center(rowRect.right() - kDotMargin - kDotRadius, rowRect.center().y());
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setPen(Qt::NoPen);
-    painter->setBrush(color);
-    const QPoint center(rowRect.right() - kDotMargin - kDotRadius, rowRect.center().y());
-    painter->drawEllipse(center, kDotRadius, kDotRadius);
+    if (eqActive) {
+        QColor color = index.data(SessionListController::RoleEqColor).value<QColor>();
+        if (!color.isValid()) {
+            color = QColor(70, 130, 220);
+        }
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(color);
+        painter->drawEllipse(center, kDotRadius, kDotRadius);
+    }
+    if (muted) {
+        drawMuteProhibition(painter, center);
+    }
     painter->restore();
 }
 

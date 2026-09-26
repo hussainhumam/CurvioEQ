@@ -1,5 +1,5 @@
 #define MyAppName "CurvioEQ"
-#define MyAppVersion "1.3.1"
+#define MyAppVersion "1.3.2"
 #define MyAppPublisher "Hussein"
 #define MyAppExeName "bin\CurvioEQ.exe"
 #define DeployDir "..\dist"
@@ -45,6 +45,9 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall; Components: app
+
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\exefile\shell\CurvioEQ.StartAtAppStartup"; Flags: uninsdeletekey
 
 [Messages]
 FinishedLabel=CurvioEQ is installed.%n%nSelect an app, pick a preset, and EQ will play on your chosen output device.

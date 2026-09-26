@@ -1,5 +1,7 @@
 #include "eqprocessor.h"
 
+#include "ui/appconstants.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -18,10 +20,23 @@ float EqProcessor::Biquad::processSample(float input)
     return output;
 }
 
+double EqProcessor::Biquad::processSampleD(double input)
+{
+    const int coeffIndex = activeCoeffIndex.load(std::memory_order_acquire);
+    const BiquadCoeffs &c = coeffs[static_cast<size_t>(coeffIndex)];
+
+    const double output = static_cast<double>(c.b0) * input + dz1;
+    dz1 = static_cast<double>(c.b1) * input - static_cast<double>(c.a1) * output + dz2;
+    dz2 = static_cast<double>(c.b2) * input - static_cast<double>(c.a2) * output;
+    return output;
+}
+
 void EqProcessor::Biquad::reset()
 {
     z1 = 0.f;
     z2 = 0.f;
+    dz1 = 0.0;
+    dz2 = 0.0;
 }
 
 void EqProcessor::Biquad::publishCoeffs(const BiquadCoeffs &updated)
@@ -52,6 +67,12 @@ EqProcessor::EqProcessor()
     }
 
     setSampleRate(48000.f);
+}
+
+void EqProcessor::setUseDoublePrecision(bool enabled)
+{
+    m_useDouble.store(enabled, std::memory_order_release);
+    reset();
 }
 
 void EqProcessor::setSampleRate(float sampleRate)
@@ -118,6 +139,12 @@ void EqProcessor::setParametricFilters(const EqFilter *filters, int count)
     m_parametricCount.store(safeCount, std::memory_order_release);
 }
 
+void EqProcessor::setBalance(int balance)
+{
+    m_balance.store(std::clamp(balance, AppConstants::kMinBalance, AppConstants::kMaxBalance),
+                    std::memory_order_relaxed);
+}
+
 void EqProcessor::setEqState(const EqState &state)
 {
     if (state.advanced) {
@@ -128,6 +155,7 @@ void EqProcessor::setEqState(const EqState &state)
     } else {
         setGains(state.gainsDb);
     }
+    setBalance(state.balance);
 }
 
 void EqProcessor::publishBypass(int slot)
@@ -306,10 +334,32 @@ void EqProcessor::process(float *interleavedSamples, int frameCount, int channel
     const int channelsToProcess = std::min(channelCount, kMaxChannels);
     const bool advanced = m_advanced.load(std::memory_order_acquire);
     const int parametricCount = m_parametricCount.load(std::memory_order_acquire);
+    const bool useDouble = m_useDouble.load(std::memory_order_acquire);
 
     for (int frame = 0; frame < frameCount; ++frame) {
         for (int channel = 0; channel < channelsToProcess; ++channel) {
             const int index = frame * channelCount + channel;
+            if (useDouble) {
+                double sample = static_cast<double>(interleavedSamples[index]);
+                if (!advanced) {
+                    const double dry = sample;
+                    auto &biquads = (channel == 0) ? m_simpleLeft : m_simpleRight;
+                    double output = dry;
+                    for (int band = 0; band < kBandCount; ++band) {
+                        const double peaked = biquads[static_cast<size_t>(band)].processSampleD(dry);
+                        output += (peaked - dry);
+                    }
+                    sample = output;
+                } else {
+                    auto &biquads = (channel == 0) ? m_paramLeft : m_paramRight;
+                    for (int i = 0; i < parametricCount; ++i) {
+                        sample = biquads[static_cast<size_t>(i)].processSampleD(sample);
+                    }
+                }
+                interleavedSamples[index] = static_cast<float>(sample);
+                continue;
+            }
+
             float sample = interleavedSamples[index];
 
             if (!advanced) {
@@ -329,6 +379,18 @@ void EqProcessor::process(float *interleavedSamples, int frameCount, int channel
             }
 
             interleavedSamples[index] = sample;
+        }
+    }
+
+    const int balance = m_balance.load(std::memory_order_relaxed);
+    if (balance != 0 && channelsToProcess >= 2) {
+        float leftGain = 1.f;
+        float rightGain = 1.f;
+        EqState::stereoBalanceGains(balance, &leftGain, &rightGain);
+        for (int frame = 0; frame < frameCount; ++frame) {
+            const int leftIndex = frame * channelCount;
+            interleavedSamples[leftIndex] *= leftGain;
+            interleavedSamples[leftIndex + 1] *= rightGain;
         }
     }
 }

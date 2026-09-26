@@ -9,6 +9,7 @@ project(CurvioEQ LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Network Concurrent)
 
@@ -56,6 +57,8 @@ qt_add_executable(CurvioEQ
     audio/resampler.h
     audio/spscringbuffer.h
     audio/clocksync.h
+    audio/engineiosettings.h
+    audio/wasapierror.h
     audio/mixlimiter.cpp
     audio/mixlimiter.h
     audio/spectrumceilinglimiter.cpp
@@ -122,6 +125,10 @@ qt_add_executable(CurvioEQ
     ui/audiodeviceresolver.h
     ui/singleinstanceserver.cpp
     ui/singleinstanceserver.h
+    ui/startuppresetstore.cpp
+    ui/startuppresetstore.h
+    ui/explorerstartupverb.cpp
+    ui/explorerstartupverb.h
     ui/presetpanelcontroller.cpp
     ui/presetpanelcontroller.h
     ui/autoeqcatalog.cpp
@@ -200,6 +207,7 @@ target_link_libraries(CurvioEQ
         Qt::Network
         Qt::Concurrent
         ole32
+        shell32
         mmdevapi
         uuid
         avrt
@@ -290,3 +298,9 @@ add_test(NAME DspVerify COMMAND CurvioEQ_DspVerify)
 install(TARGETS CurvioEQ_DspVerify
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+if(EXISTS "${CMAKE_BINARY_DIR}/compile_commands.json")
+    configure_file("${CMAKE_BINARY_DIR}/compile_commands.json"
+                   "${CMAKE_SOURCE_DIR}/compile_commands.json"
+                   COPYONLY)
+endif()

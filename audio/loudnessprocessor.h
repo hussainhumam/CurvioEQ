@@ -17,6 +17,7 @@ public:
 
     void reset();
     void process(float *interleaved, int frameCount, int channelCount);
+    void setUseDoublePrecision(bool enabled);
 
     static float targetLoudnessDbForAmount(int amount);
 
@@ -29,8 +30,11 @@ private:
         float a2 = 0.f;
         float z1 = 0.f;
         float z2 = 0.f;
+        double dz1 = 0.0;
+        double dz2 = 0.0;
 
         float processSample(float input);
+        double processSampleD(double input);
         void reset();
     };
 
@@ -43,6 +47,7 @@ private:
 
     std::atomic<bool> m_enabled{false};
     std::atomic<int> m_amount{0};
+    std::atomic<bool> m_useDouble{false};
 
     float m_sampleRate = 48000.f;
     float m_currentGainDb = 0.f;

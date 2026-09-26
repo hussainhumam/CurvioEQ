@@ -1,5 +1,6 @@
 #include "vst3addonstore.h"
 
+#include "ui/appiconprovider.h"
 #include "ui/apppaths.h"
 
 #include <QDir>
@@ -13,7 +14,7 @@
 namespace {
 QString normalizeExe(const QString &exePath)
 {
-    return QDir::toNativeSeparators(QFileInfo(exePath).absoluteFilePath()).toLower();
+    return AppIconProvider::normalizeExePath(exePath);
 }
 
 QJsonObject slotToJson(const Vst3SlotState &slot)

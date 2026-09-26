@@ -2,6 +2,7 @@
 
 #include "appconstants.h"
 
+#include <QPainterPath>
 #include <QWidget>
 #include <QVector>
 
@@ -40,6 +41,7 @@ protected:
 private:
     QRect plotRect() const;
     QRect handleRect() const;
+    QPainterPath handleCalloutPath() const;
     float yToDb(int y) const;
     int dbToY(float db) const;
     bool isNearCeiling(int y) const;

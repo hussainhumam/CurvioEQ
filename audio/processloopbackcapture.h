@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <audioclient.h>
+#include <cstdint>
 #include <vector>
 #include <wtypes.h>
 
@@ -22,6 +23,10 @@ public:
 
     bool read(float *interleavedBuffer, int frameCount, int *framesRead, QString *errorMessage);
 
+    uint64_t lastDevicePosition() const { return m_lastDevicePosition; }
+    uint64_t lastQpcPosition() const { return m_lastQpcPosition; }
+    bool deviceLost() const { return m_deviceLost; }
+
     static bool isProcessRunning(unsigned long processId);
 
 private:
@@ -38,4 +43,9 @@ private:
     int m_channelCount = 0;
     int m_bytesPerFrame = 0;
     std::vector<float> m_pendingFrames;
+    size_t m_pendingRead = 0;
+    uint64_t m_lastDevicePosition = 0;
+    uint64_t m_lastQpcPosition = 0;
+    uint64_t m_capturedFrameCounter = 0;
+    bool m_deviceLost = false;
 };

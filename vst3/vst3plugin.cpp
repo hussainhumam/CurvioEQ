@@ -17,6 +17,7 @@
 #include <QCloseEvent>
 #include <QDialog>
 #include <QDirIterator>
+#include <QElapsedTimer>
 #include <QShowEvent>
 #include <algorithm>
 #include <cstring>
@@ -199,6 +200,7 @@ struct Vst3Plugin::Impl {
     bool hasAudioInput = true;
     float sampleRate = 48000.f;
     int maxBlock = kMaxProcessFrames;
+    int latencySamples = 0;
     CurvioVst3::ComponentHandler handler;
     CurvioVst3::ParameterChanges inputChanges;
     std::array<float, kMaxProcessChannels * kMaxProcessFrames> planar{};
@@ -441,6 +443,8 @@ bool Vst3Plugin::load(const QString &modulePath, const QString &uid, QString *er
     setup.sampleRate = m_impl->sampleRate;
     m_impl->processor->setupProcessing(setup);
     component->setActive(true);
+    m_impl->latencySamples = static_cast<int>(m_impl->processor->getLatencySamples());
+    AudioLog::info(kTag, QStringLiteral("%1 latency=%2 samples").arg(uid).arg(m_impl->latencySamples));
 
     m_name = uid;
     m_uid = uid;
@@ -481,6 +485,19 @@ void Vst3Plugin::setSampleRate(float sampleRate, int maxBlockSize)
     setup.sampleRate = m_impl->sampleRate;
     m_impl->processor->setupProcessing(setup);
     m_impl->component->setActive(true);
+    m_impl->latencySamples = static_cast<int>(m_impl->processor->getLatencySamples());
+    AudioLog::info(kTag,
+                   QStringLiteral("%1 latency=%2 samples after setup")
+                       .arg(m_name.isEmpty() ? m_uid : m_name)
+                       .arg(m_impl->latencySamples));
+}
+
+int Vst3Plugin::latencySamples() const
+{
+    if (!m_impl) {
+        return 0;
+    }
+    return m_impl->latencySamples;
 }
 
 bool Vst3Plugin::process(float *interleaved, int frameCount, int channelCount)
@@ -493,7 +510,6 @@ bool Vst3Plugin::process(float *interleaved, int frameCount, int channelCount)
         return true;
     }
 
-    const int frames = std::min(frameCount, kMaxProcessFrames);
     const int channels = std::clamp(channelCount, 1, kMaxProcessChannels);
 
     {
@@ -513,10 +529,6 @@ bool Vst3Plugin::process(float *interleaved, int frameCount, int channelCount)
     for (int ch = 0; ch < channels; ++ch) {
         m_impl->channelPtrs[static_cast<size_t>(ch)] =
             m_impl->planar.data() + static_cast<size_t>(ch * kMaxProcessFrames);
-        for (int i = 0; i < frames; ++i) {
-            m_impl->channelPtrs[static_cast<size_t>(ch)][i] =
-                interleaved[static_cast<size_t>(i * channelCount + std::min(ch, channelCount - 1))];
-        }
     }
 
     m_impl->inBus.numChannels = m_impl->hasAudioInput ? channels : 0;
@@ -526,28 +538,43 @@ bool Vst3Plugin::process(float *interleaved, int frameCount, int channelCount)
     m_impl->outBus.silenceFlags = 0;
     m_impl->outBus.channelBuffers32 = m_impl->channelPtrs.data();
 
-    ProcessData data{};
-    data.processMode = kRealtime;
-    data.symbolicSampleSize = kSample32;
-    data.numSamples = frames;
-    data.numInputs = m_impl->hasAudioInput ? 1 : 0;
-    data.numOutputs = 1;
-    data.inputs = m_impl->hasAudioInput ? &m_impl->inBus : nullptr;
-    data.outputs = &m_impl->outBus;
-    data.inputParameterChanges = m_impl->inputChanges.count > 0 ? &m_impl->inputChanges : nullptr;
+    bool appliedEdits = false;
+    for (int offset = 0; offset < frameCount; offset += kMaxProcessFrames) {
+        const int frames = std::min(kMaxProcessFrames, frameCount - offset);
+        for (int ch = 0; ch < channels; ++ch) {
+            float *planar = m_impl->channelPtrs[static_cast<size_t>(ch)];
+            for (int i = 0; i < frames; ++i) {
+                planar[i] = interleaved[static_cast<size_t>((offset + i) * channelCount
+                                                            + std::min(ch, channelCount - 1))];
+            }
+        }
 
-    m_impl->setProcessing(true);
-    if (m_impl->processor->process(data) != kResultOk) {
-        m_impl->failed = true;
-        AudioLog::warn(kTag, QStringLiteral("%1 process failed; bypassing").arg(m_name));
-        return false;
-    }
+        ProcessData data{};
+        data.processMode = kRealtime;
+        data.symbolicSampleSize = kSample32;
+        data.numSamples = frames;
+        data.numInputs = m_impl->hasAudioInput ? 1 : 0;
+        data.numOutputs = 1;
+        data.inputs = m_impl->hasAudioInput ? &m_impl->inBus : nullptr;
+        data.outputs = &m_impl->outBus;
+        if (!appliedEdits && m_impl->inputChanges.count > 0) {
+            data.inputParameterChanges = &m_impl->inputChanges;
+            appliedEdits = true;
+        }
 
-    for (int i = 0; i < frames; ++i) {
-        for (int ch = 0; ch < channelCount; ++ch) {
-            const int src = std::min(ch, channels - 1);
-            interleaved[static_cast<size_t>(i * channelCount + ch)] =
-                m_impl->channelPtrs[static_cast<size_t>(src)][i];
+        m_impl->setProcessing(true);
+        if (m_impl->processor->process(data) != kResultOk) {
+            m_impl->failed = true;
+            AudioLog::warn(kTag, QStringLiteral("%1 process failed; bypassing").arg(m_name));
+            return false;
+        }
+
+        for (int i = 0; i < frames; ++i) {
+            for (int ch = 0; ch < channelCount; ++ch) {
+                const int src = std::min(ch, channels - 1);
+                interleaved[static_cast<size_t>((offset + i) * channelCount + ch)] =
+                    m_impl->channelPtrs[static_cast<size_t>(src)][i];
+            }
         }
     }
     return true;

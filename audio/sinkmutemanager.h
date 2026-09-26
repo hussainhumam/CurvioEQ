@@ -11,6 +11,7 @@ public:
     static SinkMuteManager &instance();
 
     bool acquire(const QString &deviceId, bool enabled, QString *errorMessage = nullptr);
+    bool ensure(const QString &deviceId, bool enabled, QString *errorMessage = nullptr);
     void release(const QString &deviceId, bool enabled);
 
 private:

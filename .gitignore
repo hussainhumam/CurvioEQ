@@ -16,3 +16,4 @@ debug-*.log
 # IDE
 .vs/
 .vscode/
+compile_commands.json

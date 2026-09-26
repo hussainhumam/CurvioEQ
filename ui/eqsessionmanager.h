@@ -36,6 +36,13 @@ struct ConfiguredEqSession {
     QColor labelColor;
 };
 
+struct EqSessionStartSettings {
+    EqState eq{};
+    VirtualSurroundSettings virtualSurround{};
+    DynamicRangeSettings dynamicRange{};
+    AudioChainOrder audioChainOrder{};
+};
+
 class EqSessionManager : public QObject
 {
     Q_OBJECT
@@ -56,10 +63,12 @@ public:
     QVector<ConfiguredEqSession> configuredTraySessions() const;
 
     bool enableForProcess(unsigned long processId);
+    bool enableForProcess(unsigned long processId, const EqSessionStartSettings &settings);
     void disableForProcess(unsigned long processId);
     void disableAll();
     bool canRestoreProcess(unsigned long processId) const;
     bool restoreForProcess(unsigned long processId);
+    void restartActiveSessions();
 
     void saveDraftForProcess(unsigned long processId,
                              const EqState &eqState,
@@ -74,6 +83,7 @@ public:
 
     void pushLiveGainsForProcess(unsigned long processId);
     void scheduleLiveGainsForProcess(unsigned long processId);
+    void applyLiveBalance(unsigned long processId, int balance);
     void pushLiveSurroundForProcess(unsigned long processId);
     void pushLiveDynamicsForProcess(unsigned long processId);
     void pushLiveAudioChainForProcess(unsigned long processId);
@@ -96,6 +106,7 @@ private:
                         QString *errorTitle,
                         QString *errorMessage);
     QVector<unsigned long> linkedProcessIds(unsigned long processId) const;
+    bool startPreparedSession(unsigned long processId, EqSessionSnapshot snapshot);
 
     AudioEngine *m_engine = nullptr;
     SettingsStore *m_store = nullptr;
@@ -103,6 +114,7 @@ private:
     QTimer *m_gainDebounceTimer = nullptr;
     QTimer *m_routingWatchdogTimer = nullptr;
     unsigned long m_pendingGainPid = 0;
+    bool m_restarting = false;
     std::function<EqState()> m_eqStateReader;
     std::function<VirtualSurroundSettings()> m_surroundStateReader;
     std::function<DynamicRangeSettings()> m_dynamicsStateReader;

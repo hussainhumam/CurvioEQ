@@ -24,7 +24,9 @@ public:
     void setBandGain(int band, float gainDb);
     void setGains(const std::array<float, kBandCount> &gainsDb);
     void setEqState(const EqState &state);
+    void setBalance(int balance);
     void setParametricFilters(const EqFilter *filters, int count);
+    void setUseDoublePrecision(bool enabled);
 
 private:
     struct BiquadCoeffs {
@@ -40,8 +42,11 @@ private:
         std::atomic<int> activeCoeffIndex{0};
         float z1 = 0.f;
         float z2 = 0.f;
+        double dz1 = 0.0;
+        double dz2 = 0.0;
 
         float processSample(float input);
+        double processSampleD(double input);
         void reset();
         void publishCoeffs(const BiquadCoeffs &updated);
     };
@@ -54,6 +59,8 @@ private:
 
     float m_sampleRate = 48000.f;
     std::atomic<bool> m_advanced{false};
+    std::atomic<bool> m_useDouble{false};
+    std::atomic<int> m_balance{0};
 
     std::array<std::atomic<float>, kBandCount> m_targetGainsDb{};
     std::array<float, kBandCount> m_currentGainsDb{};

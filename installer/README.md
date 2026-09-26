@@ -32,7 +32,7 @@ Output: `dist/CurvioEQ-Setup.exe`
 build_portable.bat
 ```
 
-Output: `dist/CurvioEQ-1.3.1-portable.zip`. Includes `portable.txt` so settings stay in the unzipped folder.
+Output: `dist/CurvioEQ-1.3.2-portable.zip`. Includes `portable.txt` so settings stay in the unzipped folder.
 
 ## 3. After install
 

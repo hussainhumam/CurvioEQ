@@ -35,6 +35,31 @@ bool SinkMuteManager::acquire(const QString &deviceId, bool enabled, QString *er
     return true;
 }
 
+bool SinkMuteManager::ensure(const QString &deviceId, bool enabled, QString *errorMessage)
+{
+    if (!enabled || deviceId.isEmpty()) {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_states.find(deviceId);
+    if (it == m_states.end() || it.value().refcount <= 0) {
+        return true;
+    }
+
+    bool muted = false;
+    if (!AudioEndpointVolume::getMute(deviceId, &muted, errorMessage)) {
+        return false;
+    }
+    if (muted) {
+        return true;
+    }
+    if (!AudioEndpointVolume::setMute(deviceId, true, errorMessage)) {
+        return false;
+    }
+    return true;
+}
+
 void SinkMuteManager::release(const QString &deviceId, bool enabled)
 {
     if (!enabled || deviceId.isEmpty()) {

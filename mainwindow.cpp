@@ -16,6 +16,7 @@
 #include "ui/audiodeviceresolver.h"
 #include "ui/eqcolorpalette.h"
 #include "ui/eqsessionmanager.h"
+#include "ui/explorerstartupverb.h"
 #include "ui/globalhotkeymanager.h"
 #include "ui/keybindsdialog.h"
 #include "ui/presetpanelcontroller.h"
@@ -42,6 +43,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
+#include <QFileInfo>
 #include <QFont>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -51,11 +53,11 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
-#include <QScrollBar>
 #include <QShowEvent>
 #include <QStackedWidget>
 #include <QTextBrowser>
 #include <QTimer>
+#include <QToolTip>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -296,6 +298,10 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_sessionList, &SessionListController::refreshRequested, this, [this]() {
         m_audioEngine.pruneEndedSessions();
+        applyStartupPresetsToVisibleSessions();
+        if (m_sessionList && m_eqSessionManager) {
+            m_sessionList->setEqSessions(m_eqSessionManager->activeSessionColors());
+        }
         updateEqControlState();
     });
     connect(m_sessionList, &SessionListController::logMessage, this, &MainWindow::appendLog);
@@ -305,14 +311,32 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         }
         if (m_eqSessionManager->enableForProcess(pid)) {
-            if (m_addonManager) {
-                m_addonManager->attachToSession(pid, AppIconProvider::executablePathForProcess(pid), 48000.f);
-            }
+            attachAddonsForProcess(pid);
             m_sliderEditPid = pid;
             refreshSessionList();
             updateSpectrumForSelection();
             updateEqControlState();
         }
+    });
+    connect(m_sessionList, &SessionListController::startupPresetToggled, this,
+            [this](unsigned long pid, bool enable) {
+                const QString exePath = AppIconProvider::executablePathForProcess(pid);
+                if (exePath.isEmpty()) {
+                    showCopyableError(QStringLiteral("Start at app startup"),
+                                      QStringLiteral("Could not find this app's executable."));
+                    return;
+                }
+                if (!enable) {
+                    if (!m_startupPresetStore.removeBinding(exePath)) {
+                        showCopyableError(QStringLiteral("Start at app startup"),
+                                          QStringLiteral("Could not update startup preset bindings."));
+                    }
+                    return;
+                }
+                bindStartupPresetForExe(exePath);
+            });
+    m_sessionList->setStartupPresetBoundQuery([this](unsigned long pid) {
+        return m_startupPresetStore.hasBinding(AppIconProvider::executablePathForProcess(pid));
     });
     connect(m_sessionList, &SessionListController::disableEqRequested, this, [this](unsigned long pid) {
         if (!m_eqSessionManager) {
@@ -458,6 +482,7 @@ MainWindow::MainWindow(QWidget *parent)
         if (m_loadingSliders || !m_eqSessionManager) {
             return;
         }
+        markCurrentPresetDirty();
         applySurroundToEngine();
         saveSurroundSettings();
     });
@@ -466,6 +491,7 @@ MainWindow::MainWindow(QWidget *parent)
             if (m_loadingSliders || !m_eqSessionManager) {
                 return;
             }
+            markCurrentPresetDirty();
             applySurroundToEngine();
             saveSurroundSettings();
         });
@@ -478,6 +504,7 @@ MainWindow::MainWindow(QWidget *parent)
             if (m_loadingSliders || !m_eqSessionManager) {
                 return;
             }
+            markCurrentPresetDirty();
             applySurroundToEngine();
             saveSurroundSettings();
         });
@@ -488,6 +515,7 @@ MainWindow::MainWindow(QWidget *parent)
                 if (m_loadingSliders || !m_eqSessionManager) {
                     return;
                 }
+                markCurrentPresetDirty();
                 applySurroundToEngine();
                 saveSurroundSettings();
             });
@@ -499,6 +527,7 @@ MainWindow::MainWindow(QWidget *parent)
             if (m_loadingSliders || !m_eqSessionManager) {
                 return;
             }
+            markCurrentPresetDirty();
             applyDynamicRangeToEngine();
             saveDynamicRangeSettings();
         });
@@ -511,6 +540,7 @@ MainWindow::MainWindow(QWidget *parent)
             if (m_loadingSliders || !m_eqSessionManager) {
                 return;
             }
+            markCurrentPresetDirty();
             applyDynamicRangeToEngine();
             saveDynamicRangeSettings();
         });
@@ -523,6 +553,7 @@ MainWindow::MainWindow(QWidget *parent)
             if (m_loadingSliders || !m_eqSessionManager) {
                 return;
             }
+            markCurrentPresetDirty();
             applyDynamicRangeToEngine();
             saveDynamicRangeSettings();
         });
@@ -579,6 +610,8 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_singleInstance = new SingleInstanceServer(this);
     connect(m_singleInstance, &SingleInstanceServer::showRequested, this, &MainWindow::onShowWindow);
+    connect(m_singleInstance, &SingleInstanceServer::startAtAppStartupRequested, this,
+            &MainWindow::handleStartAtAppStartup);
     connect(m_singleInstance, &SingleInstanceServer::listenFailed, this,
             [this](const QString &errorMessage) {
                 appendLog(QStringLiteral("WARN"),
@@ -587,6 +620,10 @@ MainWindow::MainWindow(QWidget *parent)
             });
 
     m_singleInstance->listen();
+    if (!ExplorerStartupVerb::registerVerb()) {
+        appendLog(QStringLiteral("WARN"),
+                  QStringLiteral("Could not register Explorer \"Start at app startup\" menu item"));
+    }
 
     updateEqControlState();
     refreshSessionList();
@@ -875,6 +912,95 @@ void MainWindow::setupEqModeUi()
     ui->eqPanelLayout->setStretch(0, 0);
     ui->eqPanelLayout->setStretch(1, 1);
 
+    auto *balanceRow = new QHBoxLayout();
+    balanceRow->setContentsMargins(8, 0, 8, 4);
+    balanceRow->setSpacing(6);
+    auto *balanceLeftLabel = new QLabel(QStringLiteral("L"), ui->eqGroup);
+    balanceLeftLabel->setAlignment(Qt::AlignCenter);
+    balanceLeftLabel->setFixedWidth(14);
+    m_balanceSlider = new QSlider(Qt::Horizontal, ui->eqGroup);
+    m_balanceSlider->setRange(AppConstants::kMinBalance, AppConstants::kMaxBalance);
+    m_balanceSlider->setValue(AppConstants::kDefaultBalance);
+    m_balanceSlider->setSingleStep(1);
+    m_balanceSlider->setPageStep(1);
+    m_balanceSlider->setToolTip(
+        QStringLiteral("Shift output toward the left or right speaker. 0 is centered. "
+                       "Values near 0 snap to center."));
+    m_balanceLeftValueLabel = new QLabel(QStringLiteral("0"), ui->eqGroup);
+    m_balanceLeftValueLabel->setAlignment(Qt::AlignCenter);
+    m_balanceLeftValueLabel->setFixedWidth(24);
+    m_balanceValueLabel = new QLabel(QStringLiteral("0"), ui->eqGroup);
+    m_balanceValueLabel->setAlignment(Qt::AlignCenter);
+    m_balanceValueLabel->setFixedWidth(24);
+    auto *balanceRightLabel = new QLabel(QStringLiteral("R"), ui->eqGroup);
+    balanceRightLabel->setAlignment(Qt::AlignCenter);
+    balanceRightLabel->setFixedWidth(14);
+    balanceRow->addWidget(balanceLeftLabel);
+    balanceRow->addWidget(m_balanceLeftValueLabel);
+    balanceRow->addWidget(m_balanceSlider, 1);
+    balanceRow->addWidget(m_balanceValueLabel);
+    balanceRow->addWidget(balanceRightLabel);
+    connect(m_balanceSlider, &QSlider::sliderPressed, this, []() { QToolTip::hideText(); });
+    connect(m_balanceSlider, &QSlider::sliderMoved, this, []() { QToolTip::hideText(); });
+    ui->eqPanelLayout->insertLayout(2, balanceRow);
+
+    auto pushLiveBalance = [this](int value) {
+        if (!m_eqSessionManager || !m_sessionList) {
+            return;
+        }
+        const unsigned long pid = m_sessionList->selectedProcessId();
+        if (pid != 0) {
+            m_eqSessionManager->applyLiveBalance(pid, value);
+        }
+    };
+    auto snapBalanceToCenter = [this]() -> int {
+        if (!m_balanceSlider) {
+            return AppConstants::kDefaultBalance;
+        }
+        int value = m_balanceSlider->value();
+        constexpr int kSnapLow = -1;
+        constexpr int kSnapHigh = 1;
+        if (value >= kSnapLow && value <= kSnapHigh && value != AppConstants::kDefaultBalance) {
+            m_balanceSlider->blockSignals(true);
+            m_balanceSlider->setValue(AppConstants::kDefaultBalance);
+            m_balanceSlider->blockSignals(false);
+            value = AppConstants::kDefaultBalance;
+        }
+        return value;
+    };
+
+    connect(m_balanceSlider, &QSlider::valueChanged, this,
+            [this, pushLiveBalance, snapBalanceToCenter](int value) {
+                if (m_loadingSliders) {
+                    return;
+                }
+                if (m_balanceSlider->isSliderDown()) {
+                    QToolTip::hideText();
+                }
+                if (!m_balanceSlider->isSliderDown()) {
+                    value = snapBalanceToCenter();
+                }
+                updateBalanceLabels(value);
+                if (m_balanceSlider->isSliderDown()) {
+                    if (!m_eqHistoryCoalescing) {
+                        beginUserEqEdit();
+                    }
+                } else {
+                    beginUserEqEdit();
+                    pushLiveBalance(value);
+                    endUserEqEdit();
+                    return;
+                }
+                pushLiveBalance(value);
+            });
+    connect(m_balanceSlider, &QSlider::sliderReleased, this,
+            [this, pushLiveBalance, snapBalanceToCenter]() {
+                const int value = snapBalanceToCenter();
+                updateBalanceLabels(value);
+                pushLiveBalance(value);
+                endUserEqEdit();
+            });
+
     connect(m_simpleModeButton, &QPushButton::clicked, this, &MainWindow::onEqModeToggled);
     connect(m_advancedModeButton, &QPushButton::clicked, this, &MainWindow::onEqModeToggled);
     connect(m_parametricPanel, &ParametricEqPanel::eqChanged, this, &MainWindow::onParametricEqChanged);
@@ -959,7 +1085,7 @@ bool MainWindow::eqStatesMatch(const EqState &a, const EqState &b)
             return false;
         }
     }
-    return true;
+    return a.balance == b.balance;
 }
 
 bool MainWindow::canLeaveAdvancedMode() const
@@ -1077,6 +1203,7 @@ void MainWindow::onParametricEqChanged()
     if (m_loadingSliders || !m_eqUiModeAdvanced) {
         return;
     }
+    markCurrentPresetDirty();
     if (m_parametricPanel) {
         m_cachedAdvancedEq = m_parametricPanel->eqState();
         m_cachedAdvancedEq.advanced = true;
@@ -1339,11 +1466,23 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     return QMainWindow::eventFilter(watched, event);
 }
 
+void MainWindow::updateBalanceLabels(int value)
+{
+    if (m_balanceLeftValueLabel) {
+        m_balanceLeftValueLabel->setText(value < 0 ? QStringLiteral("+%1").arg(-value)
+                                                   : QStringLiteral("0"));
+    }
+    if (m_balanceValueLabel) {
+        m_balanceValueLabel->setText(value > 0 ? QStringLiteral("+%1").arg(value) : QStringLiteral("0"));
+    }
+}
+
 void MainWindow::beginUserEqEdit()
 {
     if (m_loadingSliders || m_applyingEqHistory || m_eqHistoryCoalescing) {
         return;
     }
+    markCurrentPresetDirty();
     m_eqHistory.push(m_lastEqSnapshot);
     m_eqHistoryCoalescing = true;
     updateEqHistoryActions();
@@ -1401,6 +1540,7 @@ void MainWindow::applyEqHistoryState(const EqState &state)
         }
     }
     updateEqHistoryActions();
+    markCurrentPresetDirty();
 }
 
 void MainWindow::onUndoEq()
@@ -1664,6 +1804,7 @@ void MainWindow::onResetDynamicsClicked()
 {
     DynamicRangeSettings settings;
     applyDynamicRangeToUi(settings);
+    markCurrentPresetDirty();
     applyDynamicRangeToEngine();
     saveDynamicRangeSettings();
     appendLog(QStringLiteral("INFO"), QStringLiteral("Dynamics settings reset to defaults"));
@@ -1738,6 +1879,7 @@ void MainWindow::onAudioChainClicked()
     }
     AudioChainDialog dialog(readAudioChainOrder(), addonNames, this);
     connect(&dialog, &AudioChainDialog::orderChanged, this, [this](const AudioChainOrder &order) {
+        markCurrentPresetDirty();
         applyAudioChainToUi(order);
         applyAudioChainToEngine();
         saveAudioChainSettings();
@@ -1753,6 +1895,7 @@ void MainWindow::onResetSurroundClicked()
     settings.strength = 75;
     settings.channelLevels = defaultVirtualSurroundChannelLevels();
     applySurroundToUi(settings);
+    markCurrentPresetDirty();
     applySurroundToEngine();
     saveSurroundSettings();
     appendLog(QStringLiteral("INFO"), QStringLiteral("Virtual surround speaker levels reset to 50"));
@@ -1778,6 +1921,125 @@ void MainWindow::refreshSessionList()
 
     m_sessionList->setEqSessions(m_eqSessionManager->activeSessionColors());
     m_sessionList->refresh();
+    applyStartupPresetsToVisibleSessions();
+    m_sessionList->setEqSessions(m_eqSessionManager->activeSessionColors());
+}
+
+void MainWindow::markCurrentPresetDirty()
+{
+    if (m_presetPanel) {
+        m_presetPanel->markDirty();
+    }
+}
+
+void MainWindow::attachAddonsForProcess(unsigned long processId)
+{
+    if (!m_addonManager || processId == 0) {
+        return;
+    }
+    m_addonManager->attachToSession(processId, AppIconProvider::executablePathForProcess(processId),
+                                    static_cast<float>(m_settingsStore.settings().sampleRate));
+}
+
+bool MainWindow::enableEqWithPreset(unsigned long processId, const EqPreset &preset)
+{
+    if (!m_eqSessionManager || processId == 0) {
+        return false;
+    }
+
+    EqSessionStartSettings settings;
+    settings.eq = preset.hasEq ? preset.eq : readEqState();
+    settings.virtualSurround = preset.hasSurround ? preset.surround : readVirtualSurroundState();
+    settings.dynamicRange = preset.hasDynamics ? preset.dynamics : readDynamicRangeState();
+    settings.audioChainOrder = preset.hasAudioChain ? preset.audioChainOrder : readAudioChainOrder();
+
+    const bool selected = m_sessionList && m_sessionList->selectedProcessId() == processId;
+    if (selected && m_presetPanel) {
+        m_presetPanel->applyPresetToUi(preset);
+        m_presetPanel->markClean(preset.id);
+    }
+
+    if (m_eqSessionManager->isRunning(processId)) {
+        m_eqSessionManager->saveDraftForProcess(processId, settings.eq, settings.virtualSurround,
+                                                settings.dynamicRange, settings.audioChainOrder);
+        return true;
+    }
+
+    if (!m_eqSessionManager->enableForProcess(processId, settings)) {
+        return false;
+    }
+    attachAddonsForProcess(processId);
+    return true;
+}
+
+void MainWindow::bindStartupPresetForExe(const QString &exePath)
+{
+    if (!m_presetPanel || exePath.isEmpty()) {
+        return;
+    }
+
+    EqPreset preset;
+    if (!m_presetPanel->ensureNamedPreset(&preset)) {
+        return;
+    }
+
+    if (!m_startupPresetStore.setBinding(exePath, preset.id)) {
+        showCopyableError(QStringLiteral("Start at app startup"),
+                          QStringLiteral("Could not save the startup preset binding."));
+        return;
+    }
+
+    appendLog(QStringLiteral("INFO"),
+              QStringLiteral("Start at app startup: %1 → %2")
+                  .arg(QFileInfo(exePath).fileName(), preset.name));
+
+    if (!m_sessionList) {
+        return;
+    }
+    for (unsigned long pid : m_sessionList->processIds()) {
+        if (StartupPresetStore::normalizeExe(AppIconProvider::executablePathForProcess(pid))
+            == StartupPresetStore::normalizeExe(exePath)) {
+            enableEqWithPreset(pid, preset);
+        }
+    }
+    refreshSessionList();
+    updateSpectrumForSelection();
+    updateEqControlState();
+}
+
+void MainWindow::applyStartupPresetsToVisibleSessions()
+{
+    if (!m_sessionList || !m_eqSessionManager) {
+        return;
+    }
+
+    QSet<unsigned long> visible;
+    for (unsigned long pid : m_sessionList->processIds()) {
+        visible.insert(pid);
+        if (m_eqSessionManager->isRunning(pid) || m_startupApplyAttempted.contains(pid)) {
+            continue;
+        }
+        const QString exePath = AppIconProvider::executablePathForProcess(pid);
+        const QString presetId = m_startupPresetStore.presetIdForExe(exePath);
+        if (presetId.isEmpty()) {
+            continue;
+        }
+        const EqPreset preset = m_presetStore.presetById(presetId);
+        if (preset.id.isEmpty()) {
+            m_startupPresetStore.removeBinding(exePath);
+            continue;
+        }
+        m_startupApplyAttempted.insert(pid);
+        enableEqWithPreset(pid, preset);
+    }
+
+    m_startupApplyAttempted.intersect(visible);
+}
+
+void MainWindow::handleStartAtAppStartup(const QString &exePath)
+{
+    onShowWindow();
+    bindStartupPresetForExe(exePath);
 }
 
 void MainWindow::onResetClicked()
@@ -1793,6 +2055,9 @@ void MainWindow::onResetClicked()
         applyGainsToSliders({});
     }
     syncEqModeCachesFromState(flat);
+    if (m_balanceSlider) {
+        m_balanceSlider->setValue(AppConstants::kDefaultBalance);
+    }
     m_loadingSliders = false;
     resetMasterSlider();
 
@@ -1838,7 +2103,7 @@ void MainWindow::onTrayToggleEq(unsigned long processId)
         if (m_addonManager) {
             m_addonManager->attachToSession(processId,
                                             AppIconProvider::executablePathForProcess(processId),
-                                            48000.f);
+                                            static_cast<float>(m_settingsStore.settings().sampleRate));
         }
     }
 
@@ -2042,8 +2307,16 @@ void MainWindow::applyKeybindSettings()
 
 void MainWindow::applySettings(const AppSettings &settings)
 {
+    const AppSettings previous = m_settingsStore.settings();
+    const EngineIoSettings previousIo = previous.engineIo();
+    const EngineIoSettings nextIo = settings.engineIo();
+    const bool ioChanged = previousIo != nextIo
+                           || previous.eqOutputDeviceId != settings.eqOutputDeviceId
+                           || previous.routingSinkDeviceId != settings.routingSinkDeviceId;
+
     m_settingsStore.setSettings(settings);
     m_settingsStore.save();
+    m_audioEngine.setEngineSettings(nextIo);
 
     VirtualSurroundSettings surroundSettings;
     surroundSettings.enabled = settings.surroundEnabled;
@@ -2080,6 +2353,18 @@ void MainWindow::applySettings(const AppSettings &settings)
     }
 
     applyKeybindSettings();
+
+    if (ioChanged && m_eqSessionManager && m_eqSessionManager->isAnyRunning()) {
+        m_eqSessionManager->restartActiveSessions();
+        if (m_addonManager) {
+            const float mixRate = static_cast<float>(settings.sampleRate);
+            for (unsigned long pid : m_audioEngine.activeProcessIds()) {
+                m_addonManager->attachToSession(pid, AppIconProvider::executablePathForProcess(pid), mixRate);
+            }
+        }
+        refreshSessionList();
+        updateEqControlState();
+    }
 }
 
 void MainWindow::updateEqControlState()
@@ -2232,17 +2517,30 @@ void MainWindow::applyEqStateToUi(const EqState &state)
         m_parametricPanel->setEqState(m_cachedAdvancedEq);
     }
     applyGainsToSliders(applied.gainsDb);
+    if (m_balanceSlider) {
+        const int balance = std::clamp(applied.balance,
+                                       AppConstants::kMinBalance,
+                                       AppConstants::kMaxBalance);
+        m_balanceSlider->blockSignals(true);
+        m_balanceSlider->setValue(balance);
+        m_balanceSlider->blockSignals(false);
+        updateBalanceLabels(balance);
+    }
     m_loadingSliders = false;
 }
 
 EqState MainWindow::readEqState() const
 {
-    if (m_eqUiModeAdvanced && m_parametricPanel) {
-        return m_parametricPanel->eqState();
-    }
     EqState state;
-    state.advanced = false;
-    state.gainsDb = readSliderGains();
+    if (m_eqUiModeAdvanced && m_parametricPanel) {
+        state = m_parametricPanel->eqState();
+    } else {
+        state.advanced = false;
+        state.gainsDb = readSliderGains();
+    }
+    if (m_balanceSlider) {
+        state.balance = m_balanceSlider->value();
+    }
     return state;
 }
 

@@ -5,6 +5,9 @@
 #include <QHash>
 #include <QModelIndex>
 #include <QObject>
+#include <QVector>
+
+#include <functional>
 
 class AppSessionDelegate;
 class QEvent;
@@ -38,9 +41,11 @@ public:
     void refresh();
 
     unsigned long selectedProcessId() const;
+    QVector<unsigned long> processIds() const;
     QString displayNameForPid(unsigned long pid) const;
     int appCount() const;
     void setClipRecording(unsigned long processId, const QString &displayName);
+    void setStartupPresetBoundQuery(std::function<bool(unsigned long)> query);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -56,6 +61,7 @@ signals:
     void recordClipRequested(unsigned long processId);
     void stopClipAnalyzeRequested();
     void appVolumeChanged(unsigned long processId, int percent);
+    void startupPresetToggled(unsigned long processId, bool enable);
 
 private slots:
     void onTimer();
@@ -79,4 +85,5 @@ private:
     QHash<unsigned long, int> m_boostPercent;
     unsigned long m_clipRecordingPid = 0;
     QString m_clipRecordingName;
+    std::function<bool(unsigned long)> m_startupPresetBoundQuery;
 };

@@ -11,6 +11,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QEvent>
+#include <QFont>
 #include <QHBoxLayout>
 #include <QHash>
 #include <QItemSelectionModel>
@@ -25,10 +26,101 @@
 #include <QStringList>
 #include <QTimer>
 #include <QVector>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPen>
+#include <QToolButton>
 #include <QWidget>
 #include <QWidgetAction>
 
 #include <algorithm>
+
+namespace {
+
+constexpr QColor kMuteMarkColor(220, 70, 70);
+
+class SpeakerMuteButton : public QToolButton
+{
+public:
+    explicit SpeakerMuteButton(QWidget *parent = nullptr)
+        : QToolButton(parent)
+    {
+        setCheckable(true);
+        setAutoRaise(true);
+        setFixedSize(16, 16);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);
+        setToolButtonStyle(Qt::ToolButtonIconOnly);
+        setStyleSheet(QStringLiteral("QToolButton { padding: 0; margin: 0; border: none; }"));
+    }
+
+    void setPercent(int percent)
+    {
+        m_percent = std::clamp(percent, 0, 150);
+        update();
+        updateTip();
+    }
+
+    void setMuted(bool muted)
+    {
+        setChecked(muted);
+        update();
+        updateTip();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF bounds = QRectF(rect()).adjusted(1.0, 1.5, -1.0, -1.5);
+        const QColor ink = palette().color(isEnabled() ? QPalette::Active : QPalette::Disabled,
+                                          QPalette::ButtonText);
+
+        QPainterPath speaker;
+        const qreal left = bounds.left();
+        const qreal midY = bounds.center().y();
+        const qreal bodyRight = left + bounds.width() * 0.34;
+        const qreal hornRight = left + bounds.width() * 0.48;
+        speaker.moveTo(left, midY - bounds.height() * 0.14);
+        speaker.lineTo(bodyRight, midY - bounds.height() * 0.14);
+        speaker.lineTo(hornRight, bounds.top() + 0.4);
+        speaker.lineTo(hornRight, bounds.bottom() - 0.4);
+        speaker.lineTo(bodyRight, midY + bounds.height() * 0.14);
+        speaker.lineTo(left, midY + bounds.height() * 0.14);
+        speaker.closeSubpath();
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(ink);
+        painter.drawPath(speaker);
+
+        if (!isChecked()) {
+            const int waves = m_percent <= 0 ? 0 : (m_percent < 40 ? 1 : (m_percent < 80 ? 2 : 3));
+            QPen wavePen(ink, 1.1, Qt::SolidLine, Qt::RoundCap);
+            painter.setPen(wavePen);
+            painter.setBrush(Qt::NoBrush);
+            const QPointF origin(hornRight + 0.5, midY);
+            for (int i = 0; i < waves; ++i) {
+                const qreal radius = 1.9 + 1.8 * static_cast<qreal>(i);
+                QRectF arc(origin.x() - radius, origin.y() - radius, radius * 2.0, radius * 2.0);
+                painter.drawArc(arc, -50 * 16, 100 * 16);
+            }
+        } else {
+            QPen slash(kMuteMarkColor, 1.4, Qt::SolidLine, Qt::RoundCap);
+            painter.setPen(slash);
+            painter.drawLine(bounds.topLeft() + QPointF(0.4, 0.4), bounds.bottomRight() - QPointF(0.4, 0.4));
+        }
+    }
+
+private:
+    void updateTip()
+    {
+        setToolTip(isChecked() ? QStringLiteral("Muted") : QStringLiteral("Volume %1%").arg(m_percent));
+    }
+
+    int m_percent = 100;
+};
+
+} // namespace
 
 SessionListController::SessionListController(QListView *listView, QLabel *countLabel, QObject *parent)
     : QObject(parent)
@@ -72,6 +164,11 @@ void SessionListController::setAutoRefreshEnabled(bool enabled)
     } else {
         m_timer->stop();
     }
+}
+
+void SessionListController::setStartupPresetBoundQuery(std::function<bool(unsigned long)> query)
+{
+    m_startupPresetBoundQuery = std::move(query);
 }
 
 void SessionListController::refresh()
@@ -141,6 +238,26 @@ void SessionListController::refresh()
 unsigned long SessionListController::selectedProcessId() const
 {
     return processIdAt(m_listView->currentIndex());
+}
+
+QVector<unsigned long> SessionListController::processIds() const
+{
+    QVector<unsigned long> ids;
+    if (!m_model) {
+        return ids;
+    }
+    ids.reserve(m_model->rowCount());
+    for (int row = 0; row < m_model->rowCount(); ++row) {
+        const QStandardItem *item = m_model->item(row);
+        if (!item) {
+            continue;
+        }
+        const unsigned long pid = static_cast<unsigned long>(item->data(RoleProcessId).toULongLong());
+        if (pid != 0) {
+            ids.append(pid);
+        }
+    }
+    return ids;
 }
 
 unsigned long SessionListController::processIdAt(const QModelIndex &index) const
@@ -343,23 +460,57 @@ void SessionListController::showContextMenu(const QPoint &position)
         });
     }
 
-    menu.addSeparator();
+    QAction *startupAction = menu.addAction(QStringLiteral("Start at app startup"));
+    startupAction->setCheckable(true);
+    const bool startupBound = m_startupPresetBoundQuery && m_startupPresetBoundQuery(processId);
+    startupAction->setChecked(startupBound);
+    startupAction->setToolTip(
+        QStringLiteral("Apply this preset whenever this app starts (CurvioEQ must be running)"));
+    connect(startupAction, &QAction::triggered, this, [this, processId](bool checked) {
+        emit startupPresetToggled(processId, checked);
+    });
 
     auto *volumeRow = new QWidget(&menu);
+    volumeRow->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    volumeRow->setFixedHeight(18);
     auto *volumeLayout = new QHBoxLayout(volumeRow);
-    volumeLayout->setContentsMargins(8, 4, 8, 4);
-    volumeLayout->setSpacing(6);
+    volumeLayout->setContentsMargins(8, 0, 8, 0);
+    volumeLayout->setSpacing(3);
+    auto *speakerButton = new SpeakerMuteButton(volumeRow);
     auto *volumeSlider = new QSlider(Qt::Horizontal, volumeRow);
     volumeSlider->setRange(AudioSessionVolume::kMinPercent, AudioSessionVolume::kMaxPercent);
-    volumeSlider->setMinimumWidth(220);
-    volumeSlider->setMinimumHeight(22);
+    volumeSlider->setFixedSize(108, 14);
+    volumeSlider->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     volumeSlider->setSingleStep(1);
     volumeSlider->setPageStep(5);
+    volumeSlider->setStyleSheet(QStringLiteral(
+        "QSlider { min-height: 14px; max-height: 14px; }"
+        "QSlider::groove:horizontal {"
+        "  height: 2px; border: none; border-radius: 1px; background: palette(mid);"
+        "}"
+        "QSlider::sub-page:horizontal {"
+        "  height: 2px; border: none; border-radius: 1px; background: palette(highlight);"
+        "}"
+        "QSlider::add-page:horizontal {"
+        "  height: 2px; border: none; border-radius: 1px; background: palette(midlight);"
+        "}"
+        "QSlider::handle:horizontal {"
+        "  width: 8px; height: 8px; margin: -3px 0; border: none; border-radius: 4px;"
+        "  background: palette(button-text);"
+        "}"
+        "QSlider::handle:horizontal:hover { background: palette(highlight); }"));
     volumeSlider->setToolTip(
         QStringLiteral("Windows mixer volume (0–100%). 101–150% is up to ~50% louder on the EQ output."));
     auto *percentLabel = new QLabel(QStringLiteral("100%"), volumeRow);
-    percentLabel->setMinimumWidth(32);
+    QFont percentFont = percentLabel->font();
+    percentFont.setPointSizeF(qMax(8.0, percentFont.pointSizeF() - 1.0));
+    percentLabel->setFont(percentFont);
+    percentLabel->setMargin(0);
+    percentLabel->setIndent(0);
+    percentLabel->setFixedWidth(percentLabel->fontMetrics().horizontalAdvance(QStringLiteral("150%")));
     percentLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    percentLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    volumeLayout->addWidget(speakerButton);
     volumeLayout->addWidget(volumeSlider, 1);
     volumeLayout->addWidget(percentLabel);
 
@@ -380,15 +531,50 @@ void SessionListController::showContextMenu(const QPoint &position)
             volumeSlider->setValue(percent);
             percentLabel->setText(QStringLiteral("%1%").arg(percent));
         } else {
+            speakerButton->setEnabled(false);
             volumeSlider->setEnabled(false);
             percentLabel->setText(QStringLiteral("\u2014"));
             volumeRow->setToolTip(volumeError);
         }
     }
+    speakerButton->setPercent(percent);
+
+    bool muted = false;
+    if (AudioSessionVolume::getMute(processId, &muted)) {
+        speakerButton->setMuted(muted);
+    }
+
+    connect(speakerButton, &QToolButton::clicked, this,
+            [this, processId, speakerButton](bool checked) {
+                if (!AudioSessionVolume::setMute(processId, checked)) {
+                    speakerButton->setEnabled(false);
+                    return;
+                }
+                speakerButton->setMuted(checked);
+                refresh();
+            });
 
     connect(volumeSlider, &QSlider::valueChanged, this,
-            [this, processId, percentLabel, volumeSlider](int value) {
+            [this, processId, percentLabel, volumeSlider, speakerButton](int value) {
+                constexpr int kSnapLow = AudioSessionVolume::kUnityPercent - 1;
+                constexpr int kSnapHigh = AudioSessionVolume::kUnityPercent + 1;
+                if (value >= kSnapLow && value <= kSnapHigh
+                    && value != AudioSessionVolume::kUnityPercent) {
+                    volumeSlider->blockSignals(true);
+                    volumeSlider->setValue(AudioSessionVolume::kUnityPercent);
+                    volumeSlider->blockSignals(false);
+                    value = AudioSessionVolume::kUnityPercent;
+                }
                 percentLabel->setText(QStringLiteral("%1%").arg(value));
+                speakerButton->setPercent(value);
+                if (speakerButton->isChecked()) {
+                    if (!AudioSessionVolume::setMute(processId, false)) {
+                        volumeSlider->setEnabled(false);
+                        return;
+                    }
+                    speakerButton->setMuted(false);
+                    refresh();
+                }
                 const float windowsLevel =
                     static_cast<float>(std::min(value, AudioSessionVolume::kUnityPercent)) / 100.f;
                 if (!AudioSessionVolume::setMasterVolume(processId, windowsLevel)) {
@@ -407,14 +593,10 @@ void SessionListController::showContextMenu(const QPoint &position)
     volumeAction->setDefaultWidget(volumeRow);
     menu.addAction(volumeAction);
 
-    menu.addSeparator();
-
     QAction *soundModsAction = menu.addAction(QStringLiteral("Manage sound files…"));
     connect(soundModsAction, &QAction::triggered, this, [this, processId]() {
         emit soundModsRequested(processId);
     });
-
-    menu.addSeparator();
 
     if (m_clipRecordingPid == processId) {
         QAction *stopClipAction = menu.addAction(QStringLiteral("Stop and analyze"));
@@ -432,8 +614,6 @@ void SessionListController::showContextMenu(const QPoint &position)
             emit recordClipRequested(processId);
         });
     }
-
-    menu.addSeparator();
 
     if (!AudioPolicyRouter::isRoutingSupported()) {
         QAction *unsupportedAction = menu.addAction(QStringLiteral("Output device routing unavailable"));

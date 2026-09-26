@@ -87,12 +87,19 @@ float SpectrumCeilingLimiter::threshold() const
     return m_threshold.load(std::memory_order_relaxed);
 }
 
+void SpectrumCeilingLimiter::setUseDoublePrecision(bool enabled)
+{
+    m_useDouble.store(enabled, std::memory_order_release);
+    reset();
+}
+
 void SpectrumCeilingLimiter::reset()
 {
     m_hopFill = 0;
     m_outRead = 0;
     m_outCount = 0;
     m_envelope.fill(1.f);
+    m_envelopeD.fill(1.0);
     for (int channel = 0; channel < kMaxChannels; ++channel) {
         std::fill(m_input[static_cast<size_t>(channel)].begin(), m_input[static_cast<size_t>(channel)].end(), 0.f);
         std::fill(m_ola[static_cast<size_t>(channel)].begin(), m_ola[static_cast<size_t>(channel)].end(), 0.f);
@@ -156,6 +163,7 @@ void SpectrumCeilingLimiter::processHop()
     const float magScale = 4.f / static_cast<float>(kFftSize);
     const float threshold = m_threshold.load(std::memory_order_relaxed);
     const float releaseCoeff = std::exp(-static_cast<float>(kHop) / (kReleaseSeconds * m_sampleRate));
+    const bool useDouble = m_useDouble.load(std::memory_order_acquire);
 
     for (int channel = 0; channel < m_channelCount; ++channel) {
         auto &input = m_input[static_cast<size_t>(channel)];
@@ -177,32 +185,47 @@ void SpectrumCeilingLimiter::processHop()
 
     std::array<float, kBandCount> gains{};
     for (int bar = 0; bar < kBandCount; ++bar) {
-        float peak = 0.f;
+        double peak = 0.0;
         const int bin0 = m_barBin0[static_cast<size_t>(bar)];
         const int bin1 = m_barBin1[static_cast<size_t>(bar)];
         for (int channel = 0; channel < m_channelCount; ++channel) {
             const auto &real = m_real[static_cast<size_t>(channel)];
             const auto &imag = m_imag[static_cast<size_t>(channel)];
             for (int bin = bin0; bin <= bin1; ++bin) {
-                const float mag = magScale
-                    * std::sqrt(real[static_cast<size_t>(bin)] * real[static_cast<size_t>(bin)]
-                                + imag[static_cast<size_t>(bin)] * imag[static_cast<size_t>(bin)]);
+                const double mag = static_cast<double>(magScale)
+                    * std::sqrt(static_cast<double>(real[static_cast<size_t>(bin)])
+                                    * static_cast<double>(real[static_cast<size_t>(bin)])
+                                + static_cast<double>(imag[static_cast<size_t>(bin)])
+                                    * static_cast<double>(imag[static_cast<size_t>(bin)]));
                 peak = std::max(peak, mag);
             }
         }
 
-        float target = 1.f;
-        if (peak > threshold) {
-            target = threshold / std::max(peak, 1e-9f);
+        double target = 1.0;
+        if (peak > static_cast<double>(threshold)) {
+            target = static_cast<double>(threshold) / std::max(peak, 1e-9);
         }
 
-        float &env = m_envelope[static_cast<size_t>(bar)];
-        if (target < env) {
-            env = target;
+        if (useDouble) {
+            double &env = m_envelopeD[static_cast<size_t>(bar)];
+            if (target < env) {
+                env = target;
+            } else {
+                env = static_cast<double>(releaseCoeff) * env
+                    + (1.0 - static_cast<double>(releaseCoeff)) * target;
+            }
+            m_envelope[static_cast<size_t>(bar)] = static_cast<float>(env);
+            gains[static_cast<size_t>(bar)] = static_cast<float>(env);
         } else {
-            env = releaseCoeff * env + (1.f - releaseCoeff) * target;
+            float &env = m_envelope[static_cast<size_t>(bar)];
+            const float targetF = static_cast<float>(target);
+            if (targetF < env) {
+                env = targetF;
+            } else {
+                env = releaseCoeff * env + (1.f - releaseCoeff) * targetF;
+            }
+            gains[static_cast<size_t>(bar)] = env;
         }
-        gains[static_cast<size_t>(bar)] = env;
     }
 
     std::array<float, kFftSize / 2> binGain{};
@@ -282,10 +305,6 @@ void SpectrumCeilingLimiter::process(float *interleaved, int frameCount, int cha
             }
             m_outRead = (m_outRead + 1) % kOutCap;
             --m_outCount;
-        } else {
-            for (int channel = 0; channel < channels; ++channel) {
-                interleaved[static_cast<size_t>(frame * channelCount + channel)] = 0.f;
-            }
         }
     }
 }

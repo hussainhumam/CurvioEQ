@@ -4,12 +4,12 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <QDir>
 #include <QFileIconProvider>
 #include <QFileInfo>
 #include <QHash>
 #include <QIcon>
 #include <QImage>
-#include <QJsonObject>
 #include <QPixmap>
 
 #include <cstring>
@@ -105,6 +105,14 @@ QString AppIconProvider::executablePathForProcess(unsigned long processId)
     CloseHandle(processHandle);
 
     return QString::fromWCharArray(exePath);
+}
+
+QString AppIconProvider::normalizeExePath(const QString &exePath)
+{
+    if (exePath.isEmpty()) {
+        return {};
+    }
+    return QDir::toNativeSeparators(QFileInfo(exePath).absoluteFilePath()).toLower();
 }
 
 QString AppIconProvider::displayNameForProcess(unsigned long processId)

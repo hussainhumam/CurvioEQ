@@ -15,6 +15,7 @@ public:
 
     void reset();
     void process(float *interleaved, int frameCount, int channelCount);
+    void setUseDoublePrecision(bool enabled);
 
 private:
     struct CompressorParams {
@@ -32,8 +33,11 @@ private:
 
     std::atomic<bool> m_enabled{false};
     std::atomic<int> m_amount{35};
+    std::atomic<bool> m_useDouble{false};
 
     float m_sampleRate = 48000.f;
     float m_envelope = 0.f;
     float m_rmsState = 0.f;
+    double m_envelopeD = 0.0;
+    double m_rmsStateD = 0.0;
 };

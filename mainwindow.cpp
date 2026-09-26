@@ -53,6 +53,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QScrollBar>
 #include <QShowEvent>
 #include <QStackedWidget>
 #include <QTextBrowser>
